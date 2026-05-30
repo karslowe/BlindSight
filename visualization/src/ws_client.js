@@ -30,9 +30,13 @@ const FORCE_LIVE = params.has("live");
 let socket = null;
 let fakeController = null; // { stop, requestReturn } when the dev feed is running
 
-function setStatus(text) {
-  const hud = document.getElementById("hud");
-  if (hud) hud.textContent = text;
+// Update the connection badge: label text plus a state class (live | sim | down).
+function setStatus(label, state = "") {
+  const el = document.getElementById("status");
+  if (!el) return;
+  el.className = "panel" + (state ? " " + state : "");
+  const lbl = el.querySelector(".label");
+  if (lbl) lbl.textContent = label;
 }
 
 function dispatch(update) {
@@ -45,7 +49,7 @@ function dispatch(update) {
 function startFakeFallback(reason) {
   if (fakeController) return; // already running
   console.warn(`[ws_client] using simulated map feed (${reason}).`);
-  setStatus("Recon Rover - SIMULATED feed (no rover connected)");
+  setStatus("SIMULATED", "sim");
   fakeController = startFakeFeed(dispatch);
 }
 // -------------------------------------------------------------------------------------
@@ -60,6 +64,7 @@ export function connect() {
     return;
   }
 
+  setStatus("connecting...", "");
   let settled = false;
   const timeout = setTimeout(() => {
     if (!settled && !FORCE_LIVE) {
@@ -81,7 +86,7 @@ export function connect() {
     settled = true;
     clearTimeout(timeout);
     if (fakeController) { fakeController.stop(); fakeController = null; } // real data wins
-    setStatus("Recon Rover - connected, waiting for map...");
+    setStatus("LIVE", "live");
   });
 
   socket.addEventListener("message", (event) => {
@@ -102,7 +107,10 @@ export function connect() {
       return;
     }
     // Live connection dropped after being open: try to reconnect.
-    if (settled && FORCE_LIVE) setTimeout(connect, 1000);
+    if (settled && FORCE_LIVE) {
+      setStatus("reconnecting...", "down");
+      setTimeout(connect, 1000);
+    }
   });
 
   socket.addEventListener("error", () => {
@@ -118,11 +126,9 @@ export function connect() {
 export function requestReturn() {
   if (socket && socket.readyState === WebSocket.OPEN) {
     socket.send(JSON.stringify({ type: "ReturnHome" }));
-    setStatus("Recon Rover - returning to start...");
   } else if (fakeController) {
     // Dev / demo mode: drive the simulated rover home.
     fakeController.requestReturn();
-    setStatus("Recon Rover - SIMULATED: returning to start...");
   } else {
     console.warn("[ws_client] no live rover connection; return command ignored.");
   }

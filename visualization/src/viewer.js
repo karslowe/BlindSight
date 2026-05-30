@@ -1,5 +1,5 @@
 /*
- * viewer.js - render the live map onto the 2D canvas.
+ * viewer.js - render the live map onto the 2D canvas, with pan/zoom.
  *
  * Draws one MapUpdate per frame:
  *   - the occupancy grid (cells),
@@ -8,8 +8,9 @@
  *   - the planned RETURN PATH home (bright green, from return_path),
  *   - the rover pose (oriented marker).
  *
- * The trail and START marker are derived on the client from the stream of poses, so they
- * need no extra fields in the contract and work identically with real rover data.
+ * A camera (zoom + pan) sits on top of an auto-fit so the map fills the screen by default
+ * but can be dragged and pinched/scrolled to inspect detail. Strokes and labels stay a
+ * constant screen size at any zoom, so it reads crisply on a phone.
  *
  * This is rung 1 of the visualization (2D top-down). The 3D point-cloud upgrade later
  * reuses the same window.__onMapUpdate hook.
@@ -26,20 +27,26 @@ const COLOR = {
   unknown: "#222831",
   free: "#cfd8dc",
   occupied: "#e74c3c",
-  trail: "rgba(236, 240, 241, 0.35)", // faint: where the rover has been
-  path: "#2ecc71", // bright: the planned route home
+  trail: "rgba(236, 240, 241, 0.35)",
+  path: "#2ecc71",
   pose: "#f1c40f",
   poseStroke: "#7a5c00",
   home: "#1abc9c",
   homeText: "#ecf0f1",
 };
 
-// ---- Client-side history derived from the pose stream ----
-let home = null; // {x, y} of the first pose seen = the return target
-const trail = []; // [{x, y}, ...] breadcrumb of where the rover has driven
-const TRAIL_MIN_SPACING_M = 0.08; // only record a point after moving this far
+// ---- Camera: a user zoom/pan applied on top of the auto-fit ----
+const cam = { zoom: 1, panX: 0, panY: 0 };
+const ZOOM_MIN = 0.4;
+const ZOOM_MAX = 10;
+let currentView = null; // most recent baked view, for input inversion
+let lastUpdate = null; // most recent frame, for redraw on resize / interaction
 
-// Let the data source reset history on (re)start of a feed.
+// ---- Client-side history derived from the pose stream ----
+let home = null;
+const trail = [];
+const TRAIL_MIN_SPACING_M = 0.08;
+
 window.__resetTrail = () => {
   home = null;
   trail.length = 0;
@@ -54,7 +61,6 @@ function recordHistory(pose) {
   }
 }
 
-// Keep the canvas backing store matched to its CSS size and the device pixel ratio.
 function fitCanvas() {
   const dpr = window.devicePixelRatio || 1;
   const cssW = canvas.clientWidth || window.innerWidth;
@@ -65,19 +71,20 @@ function fitCanvas() {
   return { w: cssW, h: cssH };
 }
 
-// Fit the whole grid into the canvas, centered, with a uniform pixels-per-cell scale.
+// Auto-fit the grid centered in the canvas, then bake the camera (zoom/pan) into the
+// scale and offsets. With zoom=1, pan=0 this is exactly the centered fit.
 function computeView(update, cssW, cssH) {
   const margin = 16;
-  const scale = Math.min(
+  const baseScale = Math.min(
     (cssW - 2 * margin) / update.width,
     (cssH - 2 * margin) / update.height
   );
-  const gridW = update.width * scale;
-  const gridH = update.height * scale;
+  const baseOffsetX = (cssW - update.width * baseScale) / 2;
+  const baseOffsetY = (cssH - update.height * baseScale) / 2;
   return {
-    scale,
-    offsetX: (cssW - gridW) / 2,
-    offsetY: (cssH - gridH) / 2,
+    scale: baseScale * cam.zoom,
+    offsetX: baseOffsetX * cam.zoom + cam.panX,
+    offsetY: baseOffsetY * cam.zoom + cam.panY,
     width: update.width,
     height: update.height,
     resolution_m: update.resolution_m,
@@ -85,7 +92,6 @@ function computeView(update, cssW, cssH) {
   };
 }
 
-// World meters -> screen pixels. Screen y is flipped (world y up, screen y down).
 function worldToScreen(wx, wy, view) {
   const col = (wx - view.origin.x) / view.resolution_m;
   const row = (wy - view.origin.y) / view.resolution_m;
@@ -104,13 +110,12 @@ function drawCells(update, view) {
       else if (v >= 100) ctx.fillStyle = COLOR.occupied;
       else ctx.fillStyle = COLOR.free;
       const sx = offsetX + c * scale;
-      const sy = offsetY + (height - 1 - r) * scale; // row 0 is the bottom
+      const sy = offsetY + (height - 1 - r) * scale;
       ctx.fillRect(sx, sy, scale + 0.5, scale + 0.5);
     }
   }
 }
 
-// Faint dashed line through everywhere the rover has driven.
 function drawTrail(view) {
   if (trail.length < 2) return;
   ctx.strokeStyle = COLOR.trail;
@@ -126,7 +131,6 @@ function drawTrail(view) {
   ctx.setLineDash([]);
 }
 
-// Bright solid line: the planned route home (only present after a return is requested).
 function drawReturnPath(update, view) {
   const path = update.return_path || [];
   if (path.length < 2) return;
@@ -145,7 +149,7 @@ function drawReturnPath(update, view) {
 function drawHome(view) {
   if (!home) return;
   const p = worldToScreen(home.x, home.y, view);
-  const r = Math.max(6, view.scale * 1.6);
+  const r = 9;
   ctx.beginPath();
   ctx.arc(p.x, p.y, r, 0, Math.PI * 2);
   ctx.fillStyle = COLOR.home;
@@ -163,13 +167,12 @@ function drawPose(update, view) {
   const pose = update.pose;
   if (!pose) return;
   const p = worldToScreen(pose.x, pose.y, view);
-  const size = Math.max(8, view.scale * 3);
-
+  const size = 11;
   ctx.save();
   ctx.translate(p.x, p.y);
-  ctx.rotate(-pose.theta); // world theta is CCW from +x; screen y is flipped
+  ctx.rotate(-pose.theta);
   ctx.beginPath();
-  ctx.moveTo(size, 0); // nose, along heading
+  ctx.moveTo(size, 0);
   ctx.lineTo(-size * 0.6, size * 0.6);
   ctx.lineTo(-size * 0.6, -size * 0.6);
   ctx.closePath();
@@ -192,6 +195,7 @@ export function renderMap(update) {
   ctx.clearRect(0, 0, w, h);
 
   const view = computeView(update, w, h);
+  currentView = view;
   drawCells(update, view);
   drawTrail(view);
   drawReturnPath(update, view);
@@ -202,16 +206,127 @@ export function renderMap(update) {
   const pct = ((knownCells / update.cells.length) * 100).toFixed(0);
   const returning = (update.return_path || []).length > 0;
   hud.textContent =
-    `Recon Rover - mapped ${pct}% - ` +
-    (returning ? "RETURNING to start" : "exploring");
+    `mapped ${pct}% - ` + (returning ? "RETURNING to start" : "exploring");
 }
 
-// Store the most recent frame so a resize can redraw it at the new size.
-let lastUpdate = null;
+function redraw() {
+  if (lastUpdate) renderMap(lastUpdate);
+}
+
 window.__onMapUpdate = (update) => {
   lastUpdate = update;
   renderMap(update);
 };
-window.addEventListener("resize", () => {
-  if (lastUpdate) renderMap(lastUpdate);
+window.addEventListener("resize", redraw);
+
+// ---- Camera controls ----------------------------------------------------------------
+// Zoom about a screen pivot so the point under the cursor / pinch stays put.
+function zoomAt(pivotX, pivotY, factor) {
+  const newZoom = Math.min(ZOOM_MAX, Math.max(ZOOM_MIN, cam.zoom * factor));
+  const fitX = (pivotX - cam.panX) / cam.zoom; // invert camera to fit-space
+  const fitY = (pivotY - cam.panY) / cam.zoom;
+  cam.panX = pivotX - fitX * newZoom;
+  cam.panY = pivotY - fitY * newZoom;
+  cam.zoom = newZoom;
+  redraw();
+}
+
+window.__resetView = () => {
+  cam.zoom = 1;
+  cam.panX = 0;
+  cam.panY = 0;
+  redraw();
+};
+
+function canvasPoint(e) {
+  const rect = canvas.getBoundingClientRect();
+  return { x: e.clientX - rect.left, y: e.clientY - rect.top };
+}
+
+// Pointer Events unify mouse + touch and give us multi-touch for pinch.
+const pointers = new Map();
+let gesture = null; // { x, y } for pan, or { dist, midX, midY } for pinch
+
+function reinitGesture() {
+  const pts = [...pointers.values()];
+  if (pts.length === 1) {
+    gesture = { x: pts[0].x, y: pts[0].y };
+  } else if (pts.length >= 2) {
+    const [a, b] = pts;
+    gesture = {
+      dist: Math.hypot(b.x - a.x, b.y - a.y),
+      midX: (a.x + b.x) / 2,
+      midY: (a.y + b.y) / 2,
+    };
+  } else {
+    gesture = null;
+  }
+}
+
+canvas.addEventListener("pointerdown", (e) => {
+  canvas.setPointerCapture(e.pointerId);
+  const p = canvasPoint(e);
+  pointers.set(e.pointerId, p);
+  reinitGesture();
 });
+
+canvas.addEventListener("pointermove", (e) => {
+  if (!pointers.has(e.pointerId)) return;
+  pointers.set(e.pointerId, canvasPoint(e));
+  const pts = [...pointers.values()];
+
+  if (pts.length === 1 && gesture) {
+    // Single-pointer drag = pan.
+    const p = pts[0];
+    cam.panX += p.x - gesture.x;
+    cam.panY += p.y - gesture.y;
+    gesture = { x: p.x, y: p.y };
+    redraw();
+  } else if (pts.length >= 2 && gesture && gesture.dist != null) {
+    // Two-pointer pinch = zoom about the midpoint, plus pan by the midpoint drag.
+    const [a, b] = pts;
+    const dist = Math.hypot(b.x - a.x, b.y - a.y);
+    const midX = (a.x + b.x) / 2;
+    const midY = (a.y + b.y) / 2;
+    cam.panX += midX - gesture.midX;
+    cam.panY += midY - gesture.midY;
+    if (gesture.dist > 0) zoomAt(midX, midY, dist / gesture.dist);
+    gesture = { dist, midX, midY };
+  }
+});
+
+function endPointer(e) {
+  if (pointers.has(e.pointerId)) pointers.delete(e.pointerId);
+  reinitGesture();
+}
+canvas.addEventListener("pointerup", endPointer);
+canvas.addEventListener("pointercancel", endPointer);
+canvas.addEventListener("pointerleave", endPointer);
+
+canvas.addEventListener(
+  "wheel",
+  (e) => {
+    e.preventDefault();
+    const p = canvasPoint(e);
+    zoomAt(p.x, p.y, e.deltaY < 0 ? 1.1 : 1 / 1.1);
+  },
+  { passive: false }
+);
+
+// Double-tap / double-click to reset the view.
+canvas.addEventListener("dblclick", () => window.__resetView());
+
+// ---- Wire the on-screen control buttons ----
+const btnReset = document.getElementById("btn-reset");
+if (btnReset) btnReset.addEventListener("click", () => window.__resetView());
+
+const btnFull = document.getElementById("btn-fullscreen");
+if (btnFull) {
+  btnFull.addEventListener("click", () => {
+    if (!document.fullscreenElement) {
+      document.documentElement.requestFullscreen?.();
+    } else {
+      document.exitFullscreen?.();
+    }
+  });
+}
