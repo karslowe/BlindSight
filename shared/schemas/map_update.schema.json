@@ -52,6 +52,16 @@
         "required": ["x", "y", "label"],
         "additionalProperties": false
       }
+    },
+    "start": {
+      "type": ["object", "null"],
+      "description": "Map-frame position {x, y} of the mission start (home), for the viewer's START marker. null if not set yet.",
+      "properties": {
+        "x": { "type": "number" },
+        "y": { "type": "number" }
+      },
+      "required": ["x", "y"],
+      "additionalProperties": false
     }
   },
   "required": ["width", "height", "resolution_m", "origin", "cells", "pose", "return_path"],

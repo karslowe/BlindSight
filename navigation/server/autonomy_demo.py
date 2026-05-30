@@ -144,7 +144,7 @@ def step(state, grid, explorer, planner):
         # Direct route home; re-plan if it has no path or the route goes stale.
         if (not planner.current_path()) or _path_blocked(grid, planner):
             planner.set_path(planner.plan(grid, state.start, state.driven))
-        if math.hypot(x - state.start.x, y - state.start.y) < 0.15:
+        if math.hypot(x - state.start.x, y - state.start.y) < 0.07:
             cmd = DriveCommand(0.0, 0.0, stop=1)  # arrived home - stop directly at start
         else:
             cmd = planner.next_command(pose)
@@ -218,10 +218,12 @@ def main() -> None:
             # tell exploring from returning (and the green "Route home" only shows then).
             route = planner.current_path() if state.mode == "return" else []
             targets = [state.target_found] if state.target_found is not None else []
+            home = {"x": state.start.x, "y": state.start.y} if state.start is not None else None
             server.publish(grid.to_map_update(
                 Pose(x=state.x, y=state.y, theta=state.theta, timestamp=time.time()),
                 route,
                 targets,
+                home,
             ))
             time.sleep(DT)
     except KeyboardInterrupt:

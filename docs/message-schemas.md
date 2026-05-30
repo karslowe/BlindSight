@@ -136,6 +136,7 @@ robot's current pose, and the planned return path.
 | `pose` | Pose | - | The robot's current pose (see schema 3). |
 | `return_path` | Waypoint[] | - | Planned return route, ordered start of travel to goal. Empty until a return is requested. |
 | `targets` | Target[] | - | Detected objects of interest (e.g. from YOLO), in the map frame. Empty until something is found. |
+| `start` | object `{x, y}` or null | m | Map-frame position of the mission start (home), for the viewer's START marker. null until set. |
 
 Where a `Waypoint` is:
 

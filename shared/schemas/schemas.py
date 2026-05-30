@@ -278,6 +278,7 @@ class MapUpdate:
     pose: Pose
     return_path: List[Waypoint] = field(default_factory=list)
     targets: List[Target] = field(default_factory=list)
+    start: Optional[dict] = None  # {"x", "y"} of the mission start (home); None if not set
 
     def to_dict(self) -> dict:
         return {
@@ -290,10 +291,12 @@ class MapUpdate:
             "pose": self.pose.to_dict(),
             "return_path": [w.to_dict() for w in self.return_path],
             "targets": [t.to_dict() for t in self.targets],
+            "start": None if self.start is None else {"x": self.start["x"], "y": self.start["y"]},
         }
 
     @classmethod
     def from_dict(cls, d: dict) -> "MapUpdate":
+        start = d.get("start")
         return cls(
             width=int(d["width"]),
             height=int(d["height"]),
@@ -303,4 +306,5 @@ class MapUpdate:
             pose=Pose.from_dict(d["pose"]),
             return_path=[Waypoint.from_dict(w) for w in d.get("return_path", [])],
             targets=[Target.from_dict(t) for t in d.get("targets", [])],
+            start=None if not start else {"x": float(start["x"]), "y": float(start["y"])},
         )

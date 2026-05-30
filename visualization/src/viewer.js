@@ -191,6 +191,9 @@ function drawPose(update, view) {
  * Input: update - a MapUpdate object. Output: none. Draws to #map and updates the HUD.
  */
 export function renderMap(update) {
+  // The brain tells us the true home position; use it (don't guess from the first pose,
+  // which is wrong if the browser connected after the rover had already moved).
+  if (update.start) home = { x: update.start.x, y: update.start.y };
   recordHistory(update.pose);
 
   const { w, h } = fitCanvas();

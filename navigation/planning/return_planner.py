@@ -28,7 +28,7 @@ from planning import pathfind  # noqa: E402
 # Planner cost: extra cost to traverse an unobserved cell (prefers known-free routes).
 _UNKNOWN_COST = 4.0
 # Controller gains/limits.
-_REACH_RADIUS_M = 0.12  # a waypoint counts as reached within this distance
+_REACH_RADIUS_M = 0.06  # a waypoint counts as reached within this distance
 _MAX_V = 0.22  # m/s, forward speed
 _MAX_W = 1.0  # rad/s, turn rate
 _K_ANG = 1.6  # proportional steering gain
