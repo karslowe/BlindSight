@@ -142,9 +142,8 @@ def step(state, grid, explorer, planner):
                 planner.set_path(path)
         cmd = planner.next_command(pose)
     else:  # return
-        # Retrace the breadcrumb (trusted - the rover already drove it), so do NOT
-        # invalidate it as the map refines; only plan once when we have no path yet.
-        if not planner.current_path():
+        # Direct route home; re-plan if it has no path or the route goes stale.
+        if (not planner.current_path()) or _path_blocked(grid, planner):
             planner.set_path(planner.plan(grid, state.start, state.driven))
         if math.hypot(x - state.start.x, y - state.start.y) < 0.15:
             cmd = DriveCommand(0.0, 0.0, stop=1)  # arrived home - stop directly at start
