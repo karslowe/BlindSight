@@ -32,8 +32,8 @@
   <div id="hud">Recon Rover - waiting for map...</div>
   <button id="return">Return to start</button>
 
-  <!-- Order matters: ws_client wires the socket, viewer draws the frames. -->
-  <script type="module" src="src/ws_client.js"></script>
+  <!-- Order matters: viewer defines the render hook first, then ws_client feeds it. -->
   <script type="module" src="src/viewer.js"></script>
+  <script type="module" src="src/ws_client.js"></script>
 </body>
 </html>

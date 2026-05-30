@@ -1,46 +1,126 @@
 /*
  * ws_client.js - connect to the rover websocket and feed live map updates to the viewer.
  *
- * Stub. The rover (UNO Q) hosts the websocket; the phone is on the rover's Wi-Fi AP, so
- * the server is the page's own origin.
+ * The rover (UNO Q) hosts the websocket; the phone is on the rover's Wi-Fi AP, so the
+ * server is the page's own origin.
  *
  * Message contract: ../../docs/message-schemas.md
  *   Receives: MapUpdate (JSON) each frame.
  *   Sends: a single "return home" command when the user taps the button.
+ *
+ * DEV FALLBACK: when no rover websocket is reachable (you are developing the viewer on a
+ * laptop), this falls back to the simulated feed in ../dev/fake_map.js so you always see
+ * an animated map. Force the fake feed with ?fake in the URL; force live-only with ?live.
+ * For production, the real socket connects and the fake feed is never started. The whole
+ * fallback is the clearly marked block below - delete it and dev/ to ship.
  */
+
+import { startFakeFeed } from "../dev/fake_map.js";
 
 // Same-origin websocket: the page is served from the rover that also hosts the socket.
 const WS_URL = `ws://${location.host}/ws`;
 
+// How long to wait for the real socket before falling back to the fake feed (dev).
+const CONNECT_TIMEOUT_MS = 1500;
+
+const params = new URLSearchParams(location.search);
+const FORCE_FAKE = params.has("fake");
+const FORCE_LIVE = params.has("live");
+
 let socket = null;
+let stopFakeFeed = null;
+
+function setStatus(text) {
+  const hud = document.getElementById("hud");
+  if (hud) hud.textContent = text;
+}
+
+function dispatch(update) {
+  if (update && update.type === "MapUpdate" && window.__onMapUpdate) {
+    window.__onMapUpdate(update);
+  }
+}
+
+// ---- DEV FALLBACK (remove for production) -------------------------------------------
+function startFakeFallback(reason) {
+  if (stopFakeFeed) return; // already running
+  console.warn(`[ws_client] using simulated map feed (${reason}).`);
+  setStatus("Recon Rover - SIMULATED feed (no rover connected)");
+  stopFakeFeed = startFakeFeed(dispatch);
+}
+// -------------------------------------------------------------------------------------
 
 /*
  * Open the websocket and route incoming MapUpdate messages to the viewer.
- * Input: none. Output: none.
- * TODO: reconnect with backoff on close/error so a brief Wi-Fi drop self-heals.
+ * Reconnects with backoff on close so a brief Wi-Fi drop self-heals.
  */
 export function connect() {
-  socket = new WebSocket(WS_URL);
+  if (FORCE_FAKE) {
+    startFakeFallback("forced by ?fake");
+    return;
+  }
 
-  socket.addEventListener("message", (event) => {
-    // TODO: validate the message type before dispatching.
-    const update = JSON.parse(event.data);
-    if (update.type === "MapUpdate" && window.__onMapUpdate) {
-      window.__onMapUpdate(update);
+  let settled = false;
+  const timeout = setTimeout(() => {
+    if (!settled && !FORCE_LIVE) {
+      settled = true;
+      try { socket && socket.close(); } catch (_) {}
+      startFakeFallback("connect timeout");
     }
+  }, CONNECT_TIMEOUT_MS);
+
+  try {
+    socket = new WebSocket(WS_URL);
+  } catch (err) {
+    clearTimeout(timeout);
+    if (!FORCE_LIVE) startFakeFallback("websocket construction failed");
+    return;
+  }
+
+  socket.addEventListener("open", () => {
+    settled = true;
+    clearTimeout(timeout);
+    if (stopFakeFeed) { stopFakeFeed(); stopFakeFeed = null; } // real data wins
+    setStatus("Recon Rover - connected, waiting for map...");
   });
 
-  // TODO: handle "open", "close", "error" (status in the HUD, reconnect on close).
+  socket.addEventListener("message", (event) => {
+    let update;
+    try {
+      update = JSON.parse(event.data);
+    } catch (_) {
+      return; // ignore non-JSON frames
+    }
+    dispatch(update);
+  });
+
+  socket.addEventListener("close", () => {
+    if (!settled && !FORCE_LIVE) {
+      settled = true;
+      clearTimeout(timeout);
+      startFakeFallback("connection closed");
+      return;
+    }
+    // Live connection dropped after being open: try to reconnect.
+    if (settled && FORCE_LIVE) setTimeout(connect, 1000);
+  });
+
+  socket.addEventListener("error", () => {
+    // The close handler does the fallback; just surface it in dev.
+    console.warn("[ws_client] websocket error");
+  });
 }
 
 /*
  * Send the single "return home" command back to the rover.
- * Input: none. Output: none.
- * TODO: define the exact command shape with the navigation team (a small JSON object).
+ * TODO: confirm the exact command shape with the navigation team.
  */
 export function requestReturn() {
   if (socket && socket.readyState === WebSocket.OPEN) {
     socket.send(JSON.stringify({ type: "ReturnHome" }));
+    setStatus("Recon Rover - returning to start...");
+  } else {
+    console.warn("[ws_client] no live rover connection; return command ignored.");
   }
 }
 
