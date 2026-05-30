@@ -41,6 +41,24 @@ class OccupancyGrid:
         """
         raise NotImplementedError("occupancy grid update not implemented yet")
 
+    def update_from_depth(self, pose: Pose, depth, intrinsics) -> None:
+        """Fold a full depth image taken at `pose` into the grid (phone/LiDAR path).
+
+        Inputs:
+            pose: the rover pose when the depth frame was captured.
+            depth: HxW array of metric depths (meters); 0 or NaN = invalid.
+            intrinsics: 3x3 camera matrix, to back-project pixels into 3D points.
+        Output: none. Mutates the grid in place.
+
+        Richer alternative to update(pose, range_m): instead of one forward range, a whole
+        depth image becomes many occupied/free cells in one shot, which is why the phone's
+        LiDAR makes the map far denser.
+        TODO: back-project depth pixels to 3D camera points, transform into the map frame
+              by `pose`, drop near-ground points, ray-cast each to mark free along the ray
+              and occupied at the hit cell. Subsample pixels for speed.
+        """
+        raise NotImplementedError("depth-based occupancy update not implemented yet")
+
     def to_map_update(self, pose: Pose, return_path: Optional[list] = None) -> MapUpdate:
         """Serialize the current grid into a MapUpdate for the server / viz.
 

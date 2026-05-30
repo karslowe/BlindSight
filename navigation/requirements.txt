@@ -13,12 +13,14 @@ fastapi==0.115.0
 uvicorn==0.30.6
 websockets==13.0
 
-# --- SLAM / visual-inertial odometry: chosen later, not pinned here. ---
-# The frontend in slam/slam_frontend.py is an interface only. Candidate backends to
-# swap in: RTAB-Map (rtabmap), ORB-SLAM3 (python bindings), OpenVINS, or Kimera.
-# Add the chosen package here once decided.
+# --- SLAM / perception backend ---
+# DEFAULT: the phone (iPhone/iPad Pro camera + LiDAR + pose) via Record3D, which offloads
+# SLAM onto the phone and streams RGBD + odometry over USB/WiFi. Uncomment to use it:
+# record3d==1.4.1
+#
+# ALTERNATIVE (self-contained SLAM, if not using the phone): swap a backend behind
+# slam/slam_frontend.py. Candidates: RTAB-Map (rtabmap), ORB-SLAM3, OpenVINS, Kimera.
 
-# --- IMU / Modulino driver: chosen later. ---
-# bridge/modulino_io.py reads the Modulino Movement (IMU) and Modulino Distance (ToF)
-# over Qwiic / I2C. Add the Arduino Modulino Python library or a smbus2-based driver here.
-# e.g. smbus2==0.4.3
+# --- IMU / ToF driver: only needed if NOT using the phone. ---
+# The phone's fused IMU makes the Modulino IMU/ToF redundant. If you keep them,
+# bridge/modulino_io.py reads them over Qwiic / I2C. e.g. smbus2==0.4.3

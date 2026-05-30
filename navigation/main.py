@@ -93,6 +93,7 @@ class Orchestrator:
         """Open hardware links. TODO: open the camera device here too."""
         self.car.connect()
         self.imu.connect()
+        self.slam.connect()  # open the phone (Record3D) perception stream
         self.server.run_in_thread()  # serve the viz + open the map websocket for phones
         self.mission_start = time.time()  # start the battery-time failsafe clock
         # TODO: open the Logitech USB webcam (cv2.VideoCapture) and store the handle.
@@ -118,10 +119,14 @@ class Orchestrator:
         if self.start_pose is None:
             self.start_pose = pose  # remember where "home" is
 
-        # 3. Mapping: fold the latest range reading into the grid.
+        # 3. Mapping: prefer the phone's dense depth; fall back to the ultrasonic range.
         telemetry = self.car.read_telemetry()
-        range_m = telemetry.ultrasonic_distance if telemetry else None
-        self.grid.update(pose, range_m)
+        depth = self.slam.last_depth()
+        if depth is not None:
+            self.grid.update_from_depth(pose, depth[0], depth[1])
+        else:
+            range_m = telemetry.ultrasonic_distance if telemetry else None
+            self.grid.update(pose, range_m)
 
         # 6. Broadcast the live map (grid + pose + planned path) to any connected phones.
         return_path = self.planner.current_path() if self.returning else []
