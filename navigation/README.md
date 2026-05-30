@@ -35,6 +35,20 @@ navigation/
 └── server/app.py            FastAPI + websocket, serves map to the phone (stub)
 ```
 
+## Developing without hardware
+
+Two dev simulators let you build and test the brain with no rover, no car, and no camera:
+
+- `python server/demo_broadcast.py` runs the REAL server with synthetic map frames. Open
+  http://localhost:8000/?live to watch the live map flow through the genuine websocket
+  pipeline into the visualization.
+- `python bridge/fake_car.py` opens a virtual serial port that behaves like the Elegoo
+  car: it accepts `DRV` lines and streams back `TEL` lines from a simulated rover in a
+  virtual room (ultrasonic shrinks as it nears a wall, bumper trips on contact, line
+  sensors fire near an edge). Point `CarLink` at the printed device path to develop and
+  test `bridge/car_link.py` against it. These are dev-only; delete them once the real
+  hardware is in the loop.
+
 ## Message schemas
 
 The contract lives in [../docs/message-schemas.md](../docs/message-schemas.md) and is
