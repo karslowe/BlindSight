@@ -37,6 +37,21 @@
         "required": ["x", "y"],
         "additionalProperties": false
       }
+    },
+    "targets": {
+      "type": "array",
+      "description": "Detected objects of interest (e.g. from YOLO), in the map frame. Empty until something is found.",
+      "items": {
+        "type": "object",
+        "properties": {
+          "x": { "type": "number" },
+          "y": { "type": "number" },
+          "label": { "type": "string" },
+          "confidence": { "type": "number", "minimum": 0, "maximum": 1 }
+        },
+        "required": ["x", "y", "label"],
+        "additionalProperties": false
+      }
     }
   },
   "required": ["width", "height", "resolution_m", "origin", "cells", "pose", "return_path"],

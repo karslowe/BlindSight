@@ -228,6 +228,34 @@ class Waypoint:
 
 
 @dataclass
+class Target:
+    """A detected object of interest (e.g. from YOLO), located in the map frame.
+
+    Fields:
+        x, y: map-frame position of the detection, meters.
+        label: class name, e.g. "person", "door".
+        confidence: detection score, 0..1.
+    """
+
+    x: float
+    y: float
+    label: str
+    confidence: float = 1.0
+
+    def to_dict(self) -> dict:
+        return {"x": self.x, "y": self.y, "label": self.label, "confidence": self.confidence}
+
+    @classmethod
+    def from_dict(cls, d: dict) -> "Target":
+        return cls(
+            x=float(d["x"]),
+            y=float(d["y"]),
+            label=str(d["label"]),
+            confidence=float(d.get("confidence", 1.0)),
+        )
+
+
+@dataclass
 class MapUpdate:
     """Full map payload pushed to the phone over the websocket.
 
@@ -238,6 +266,8 @@ class MapUpdate:
         cells: row-major int list of length width*height. -1 unknown, 0 free, 100 occupied.
         pose: the robot's current Pose.
         return_path: ordered list of Waypoint, empty until a return is requested.
+        targets: detected objects of interest (e.g. from YOLO), empty until something is
+                 found. Each accumulates once detected.
     """
 
     width: int
@@ -247,6 +277,7 @@ class MapUpdate:
     cells: List[int]
     pose: Pose
     return_path: List[Waypoint] = field(default_factory=list)
+    targets: List[Target] = field(default_factory=list)
 
     def to_dict(self) -> dict:
         return {
@@ -258,6 +289,7 @@ class MapUpdate:
             "cells": list(self.cells),
             "pose": self.pose.to_dict(),
             "return_path": [w.to_dict() for w in self.return_path],
+            "targets": [t.to_dict() for t in self.targets],
         }
 
     @classmethod
@@ -270,4 +302,5 @@ class MapUpdate:
             cells=list(d["cells"]),
             pose=Pose.from_dict(d["pose"]),
             return_path=[Waypoint.from_dict(w) for w in d.get("return_path", [])],
+            targets=[Target.from_dict(t) for t in d.get("targets", [])],
         )

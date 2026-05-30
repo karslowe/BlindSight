@@ -33,6 +33,8 @@ const COLOR = {
   poseStroke: "#7a5c00",
   home: "#1abc9c",
   homeText: "#ecf0f1",
+  target: "#e84393",
+  targetText: "#ffffff",
 };
 
 // ---- Camera: a user zoom/pan applied on top of the auto-fit ----
@@ -200,13 +202,38 @@ export function renderMap(update) {
   drawTrail(view);
   drawReturnPath(update, view);
   drawHome(view);
+  drawTargets(update, view);
   drawPose(update, view);
 
   const knownCells = update.cells.filter((v) => v !== -1).length;
   const pct = ((knownCells / update.cells.length) * 100).toFixed(0);
   const returning = (update.return_path || []).length > 0;
-  hud.textContent =
-    `mapped ${pct}% - ` + (returning ? "RETURNING to start" : "exploring");
+  const targets = update.targets || [];
+  let status = returning ? "RETURNING to start" : "exploring";
+  if (targets.length > 0) status += ` - TARGET FOUND (${targets[0].label})`;
+  hud.textContent = `mapped ${pct}% - ${status}`;
+}
+
+// Detected objects of interest (YOLO), drawn as a labeled magenta crosshair marker.
+function drawTargets(update, view) {
+  const targets = update.targets || [];
+  for (const t of targets) {
+    const p = worldToScreen(t.x, t.y, view);
+    const r = 10;
+    ctx.strokeStyle = COLOR.target;
+    ctx.lineWidth = 3;
+    ctx.beginPath();
+    ctx.arc(p.x, p.y, r, 0, Math.PI * 2);
+    ctx.moveTo(p.x - r - 4, p.y);
+    ctx.lineTo(p.x + r + 4, p.y);
+    ctx.moveTo(p.x, p.y - r - 4);
+    ctx.lineTo(p.x, p.y + r + 4);
+    ctx.stroke();
+    ctx.fillStyle = COLOR.targetText;
+    ctx.font = "bold 12px system-ui, sans-serif";
+    ctx.textAlign = "center";
+    ctx.fillText(t.label.toUpperCase(), p.x, p.y - r - 8);
+  }
 }
 
 function redraw() {

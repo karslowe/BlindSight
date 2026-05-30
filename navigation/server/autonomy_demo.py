@@ -23,11 +23,11 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "shared"))
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from schemas.schemas import DriveCommand, Pose  # noqa: E402
+from schemas.schemas import DriveCommand, Pose, Target  # noqa: E402
 from mapping.occupancy_grid import OccupancyGrid  # noqa: E402
 from planning.explorer import FrontierExplorer  # noqa: E402
 from planning.return_planner import ReturnPlanner  # noqa: E402
-from server.grid_demo import ROOM_HALF, MAX_RANGE, OBSTACLE, synthetic_scan  # noqa: E402
+from server.grid_demo import ROOM_HALF, MAX_RANGE, OBSTACLE, synthetic_scan, _ray_box  # noqa: E402
 
 DT = 0.05
 
@@ -67,6 +67,35 @@ def _path_blocked(grid, planner) -> bool:
     return False
 EXPLORE_BUDGET_TICKS = 1500  # force the return after this many ticks (safety / demo cap)
 
+# An imaginary target object in the room. The rover's simulated YOLO "sees" it when it is
+# within range, in the forward camera field of view, and not occluded by the obstacle.
+TARGET = (-1.2, 1.0, "person")  # (x, y, label)
+DETECT_RANGE_M = 1.6  # the camera can recognize the target within this distance
+DETECT_FOV_HALF = 0.6  # forward camera half-FoV, radians (~35 deg)
+
+
+def _detect_target(x: float, y: float, theta: float):
+    """Geometric stand-in for YOLO: is the target visible from (x, y, theta)? Returns the
+    target tuple if detected, else None. On the real rover, detector.detect(frame) + depth
+    does this from the camera."""
+    tx, ty, _label = TARGET
+    dx, dy = tx - x, ty - y
+    dist = math.hypot(dx, dy)
+    if dist < 1e-6 or dist > DETECT_RANGE_M:
+        return None
+    bearing = math.atan2(dy, dx)
+    err = bearing - theta
+    while err > math.pi:
+        err -= 2 * math.pi
+    while err < -math.pi:
+        err += 2 * math.pi
+    if abs(err) > DETECT_FOV_HALF:  # outside the forward field of view
+        return None
+    blocked = _ray_box(x, y, bearing, *OBSTACLE)  # occluded by the obstacle?
+    if blocked is not None and blocked < dist:
+        return None
+    return TARGET
+
 
 def step(state, grid, explorer, planner):
     """Advance the autonomy one tick. Returns the updated (x, y, theta, mode, ticks)."""
@@ -78,6 +107,16 @@ def step(state, grid, explorer, planner):
     if state.start is None:
         state.start = Pose(x=x, y=y, theta=theta, timestamp=0.0)
     state.driven.append(Pose(x=x, y=y, theta=theta, timestamp=0.0))
+
+    # Simulated YOLO: the first time the rover sees the target, mark it and (base case)
+    # head home with the finding.
+    if state.target_found is None:
+        hit = _detect_target(x, y, theta)
+        if hit is not None:
+            state.target_found = Target(x=hit[0], y=hit[1], label=hit[2], confidence=0.9)
+            if mode == "explore":
+                planner.set_path(planner.plan(grid, state.start, state.driven))
+                mode = "return"
 
     # Decide.
     # The "Return to start" button: cut exploration short and head home now.
@@ -150,6 +189,7 @@ class _State:
         self.recent = deque(maxlen=25)  # recent positions, for stuck detection
         self.recovery = 0  # ticks remaining in a back-up-and-turn recovery
         self.return_requested = False  # set by the "Return to start" button
+        self.target_found = None  # a Target once the simulated YOLO detects it
 
     def __iter__(self):
         return iter((self.x, self.y, self.theta, self.mode, self.ticks))
@@ -179,9 +219,11 @@ def main() -> None:
             # return_path carries the route home ONLY while returning, so the viewer can
             # tell exploring from returning (and the green "Route home" only shows then).
             route = planner.current_path() if state.mode == "return" else []
+            targets = [state.target_found] if state.target_found is not None else []
             server.publish(grid.to_map_update(
                 Pose(x=state.x, y=state.y, theta=state.theta, timestamp=time.time()),
                 route,
+                targets,
             ))
             time.sleep(DT)
     except KeyboardInterrupt:

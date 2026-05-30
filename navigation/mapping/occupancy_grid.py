@@ -229,11 +229,14 @@ class OccupancyGrid:
 
     # ---- serialization ----
 
-    def to_map_update(self, pose: Pose, return_path: Optional[list] = None) -> MapUpdate:
+    def to_map_update(
+        self, pose: Pose, return_path: Optional[list] = None, targets: Optional[list] = None
+    ) -> MapUpdate:
         """Serialize the current grid into a MapUpdate for the server / viz.
 
         Flattens the evidence grid to a row-major int list of -1/0/100 (row 0 first, which
-        is the bottom row, matching the schema and the viewer).
+        is the bottom row, matching the schema and the viewer). targets carries any detected
+        objects of interest.
         """
         path: List[Waypoint] = return_path or []
         if self._log is None:
@@ -251,6 +254,7 @@ class OccupancyGrid:
             cells=cells,
             pose=pose,
             return_path=path,
+            targets=targets or [],
         )
 
 

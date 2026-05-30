@@ -21,6 +21,11 @@ websockets==13.0
 # ALTERNATIVE (self-contained SLAM, if not using the phone): swap a backend behind
 # slam/slam_frontend.py. Candidates: RTAB-Map (rtabmap), ORB-SLAM3, OpenVINS, Kimera.
 
+# --- Object detection (YOLO): optional, for the "find a target" mission. ---
+# perception/detector.py runs YOLO on the camera frames to find a target object. A tiny
+# model (yolov8n) is enough for the edge. Uncomment to enable:
+# ultralytics==8.3.0
+
 # --- IMU / ToF driver: only needed if NOT using the phone. ---
 # The phone's fused IMU makes the Modulino IMU/ToF redundant. If you keep them,
 # bridge/modulino_io.py reads them over Qwiic / I2C. e.g. smbus2==0.4.3

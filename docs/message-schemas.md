@@ -135,6 +135,7 @@ robot's current pose, and the planned return path.
 | `cells` | int[] | - | Row-major, length `width * height`. Each cell: `-1` unknown, `0` free, `100` occupied. |
 | `pose` | Pose | - | The robot's current pose (see schema 3). |
 | `return_path` | Waypoint[] | - | Planned return route, ordered start of travel to goal. Empty until a return is requested. |
+| `targets` | Target[] | - | Detected objects of interest (e.g. from YOLO), in the map frame. Empty until something is found. |
 
 Where a `Waypoint` is:
 
@@ -142,6 +143,15 @@ Where a `Waypoint` is:
 | --- | --- | --- | --- |
 | `x` | float | m | Map-frame position. |
 | `y` | float | m | Map-frame position. |
+
+And a `Target` is:
+
+| Field | Type | Unit | Notes |
+| --- | --- | --- | --- |
+| `x` | float | m | Map-frame position of the detection. |
+| `y` | float | m | Map-frame position of the detection. |
+| `label` | string | - | Class name, e.g. "person", "door". |
+| `confidence` | float | - | Detection score, 0..1. Optional, defaults to 1.0. |
 
 JSON form:
 
