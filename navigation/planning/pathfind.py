@@ -18,9 +18,10 @@ from schemas.schemas import Waypoint  # noqa: E402
 
 _NEIGHBORS = [(-1, 0), (1, 0), (0, -1), (0, 1), (-1, -1), (-1, 1), (1, -1), (1, 1)]
 
-# Default obstacle inflation (cells). At 0.05 m/cell this keeps ~0.1 m of clearance so the
-# rover is never routed flush against a wall/obstacle (the cause of getting wedged).
-INFLATION_CELLS = 2
+# Default obstacle inflation (cells). At 0.05 m/cell this keeps ~0.15 m of clearance so the
+# rover is never routed flush against a wall/obstacle (the cause of getting wedged), with
+# room for the simple controller to overshoot a turn without hitting it.
+INFLATION_CELLS = 3
 
 
 def astar(

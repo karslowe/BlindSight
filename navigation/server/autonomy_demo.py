@@ -33,10 +33,22 @@ DT = 0.05
 
 
 def _in_obstacle(x: float, y: float) -> bool:
-    """True if (x, y) is inside the virtual interior obstacle (with a small margin)."""
+    """True if (x, y) is inside the solid interior obstacle (exact box, no margin)."""
     xmin, xmax, ymin, ymax = OBSTACLE
-    m = 0.03
-    return (xmin - m) <= x <= (xmax + m) and (ymin - m) <= y <= (ymax + m)
+    return xmin <= x <= xmax and ymin <= y <= ymax
+
+
+def _blocked_cell(grid, x: float, y: float) -> bool:
+    """True if (x, y) falls on a cell the MAP marks occupied.
+
+    Collision uses the same occupancy the planner avoids, so a path the planner calls free
+    is always actually drivable - no stalling on a phantom boundary near the obstacle.
+    """
+    occ = grid.blocked_array(0)
+    if occ is None:
+        return False
+    c, r = grid.world_to_cell(x, y)
+    return grid.in_bounds(c, r) and bool(occ[r, c])
 
 
 def _path_blocked(grid, planner) -> bool:
@@ -75,9 +87,9 @@ def step(state, grid, explorer, planner):
         state.return_requested = False
 
     if state.recovery > 0:
-        # Unstick: back up and turn for a few ticks, then force a re-plan off the obstacle.
+        # Unstick: reverse (and turn a little) for a few ticks, then force a re-plan.
         state.recovery -= 1
-        cmd = DriveCommand(-0.12, 0.8, 0)
+        cmd = DriveCommand(-0.14, 0.6, 0)
         if state.recovery == 0:
             planner.set_path([])
     elif mode == "explore":
@@ -103,8 +115,10 @@ def step(state, grid, explorer, planner):
         ny = y + cmd.linear_velocity * math.sin(theta) * DT
         cand_x = nx if abs(nx) < ROOM_HALF - 0.05 else x
         cand_y = ny if abs(ny) < ROOM_HALF - 0.05 else y
-        if not _in_obstacle(cand_x, cand_y):  # the obstacle is solid - can't drive through
-            x, y = cand_x, cand_y
+        if state.recovery > 0:
+            x, y = cand_x, cand_y  # recovery moves freely (reverse) to escape a wall
+        elif not (_in_obstacle(cand_x, cand_y) or _blocked_cell(grid, cand_x, cand_y)):
+            x, y = cand_x, cand_y  # normal driving stops at the obstacle, never enters it
 
     # Stuck detection: if it should be moving but barely has over the window, recover.
     if cmd is not None and cmd.stop:
@@ -113,8 +127,9 @@ def step(state, grid, explorer, planner):
         state.recent.append((x, y))
         if state.recovery == 0 and len(state.recent) == state.recent.maxlen:
             if math.hypot(x - state.recent[0][0], y - state.recent[0][1]) < 0.08:
-                state.recovery = 10
+                state.recovery = 12
                 state.recent.clear()
+                planner.set_path([])  # drop the stale path now; re-plan after recovery
 
     state.x, state.y, state.theta, state.mode, state.ticks = x, y, theta, mode, ticks + 1
     return cmd
@@ -127,7 +142,7 @@ class _State:
         self.ticks = 0
         self.start = None
         self.driven = []
-        self.recent = deque(maxlen=40)  # recent positions, for stuck detection
+        self.recent = deque(maxlen=25)  # recent positions, for stuck detection
         self.recovery = 0  # ticks remaining in a back-up-and-turn recovery
         self.return_requested = False  # set by the "Return to start" button
 
