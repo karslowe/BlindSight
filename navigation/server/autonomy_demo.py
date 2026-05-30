@@ -72,6 +72,9 @@ EXPLORE_BUDGET_TICKS = 1500  # force the return after this many ticks (safety / 
 TARGET = (-1.2, 1.0, "person")  # (x, y, label)
 DETECT_RANGE_M = 1.6  # the camera can recognize the target within this distance
 DETECT_FOV_HALF = 0.6  # forward camera half-FoV, radians (~35 deg)
+# False: explore the WHOLE space, marking the target when seen, then return when done.
+# True: head home the moment the target is found (the "search and return" base case).
+RETURN_ON_TARGET = False
 
 
 def _detect_target(x: float, y: float, theta: float):
@@ -108,13 +111,14 @@ def step(state, grid, explorer, planner):
         state.start = Pose(x=x, y=y, theta=theta, timestamp=0.0)
     state.driven.append(Pose(x=x, y=y, theta=theta, timestamp=0.0))
 
-    # Simulated YOLO: the first time the rover sees the target, mark it and (base case)
-    # head home with the finding.
+    # Simulated YOLO: the first time the rover sees the target, MARK it on the map. It
+    # keeps exploring the rest of the space and only returns home when exploration is done
+    # (set RETURN_ON_TARGET = True to instead head home the moment the target is found).
     if state.target_found is None:
         hit = _detect_target(x, y, theta)
         if hit is not None:
             state.target_found = Target(x=hit[0], y=hit[1], label=hit[2], confidence=0.9)
-            if mode == "explore":
+            if RETURN_ON_TARGET and mode == "explore":
                 planner.set_path(planner.plan(grid, state.start, state.driven))
                 mode = "return"
 
