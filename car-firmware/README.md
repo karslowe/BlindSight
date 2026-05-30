@@ -32,6 +32,27 @@ arduino-cli upload  --fqbn arduino:avr:uno -p /dev/ttyACM0 car-firmware
   protocol from the brain, format telemetry lines back.
 - [src/sensors.h](src/sensors.h) / `.cpp`: ultrasonic read, line sensor read.
 
+## Before you flash: fill in the hardware constants
+
+The firmware logic is implemented (DRV parsing, kinematics, PWM control, ultrasonic timing,
+TEL formatting). Only the hardware-specific values are left as marked constants. Set these
+from the Smart Car V4 schematic / Elegoo example sketch, then flash and calibrate on the
+bench. They all default to `0`, which is wrong (pin 0 is the serial RX line), so the car
+does nothing until you set them.
+
+- [src/motor_control.cpp](src/motor_control.cpp): `PIN_AIN1/AIN2/PWMA/BIN1/BIN2/PWMB/STBY`
+  (TB6612 pins). Bench calibration: `LEFT_INVERT`, `RIGHT_INVERT` (flip a backwards wheel),
+  `SWAP_LEFT_RIGHT` (if channels A/B are reversed).
+- [src/sensors.cpp](src/sensors.cpp): `PIN_ULTRASONIC_TRIG/ECHO`, `PIN_LINE_LEFT/CENTER/RIGHT`,
+  optional `PIN_BUMPER`, and `LINE_ACTIVE_HIGH` polarity.
+- [car-firmware.ino](car-firmware.ino): `TRACK_WIDTH_M` (measure the wheel spacing) and
+  `MAX_WHEEL_SPEED_MPS` (time a full-speed run to calibrate m/s -> PWM).
+
+Bring-up order: set the motor pins, flash, then drive it from a laptop with
+`navigation/bridge/drive_test.py --port /dev/ttyACM0` and adjust the invert/swap flags
+until it drives correctly. The DRV parser and TEL formatter are hardware-independent and
+already verified against the Python contract.
+
 ## Message schemas
 
 Defined in [../docs/message-schemas.md](../docs/message-schemas.md). Field names match the

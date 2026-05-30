@@ -25,8 +25,29 @@ static const unsigned long COMMAND_TIMEOUT_MS = 500;
 // How often to publish telemetry back to the brain.
 static const unsigned long TELEMETRY_PERIOD_MS = 50;
 
+// ===================== SET FROM THE SMART CAR V4 (calibration) =====================
+// Distance between the two drive wheels, in meters. Measure it with a ruler.
+static const float TRACK_WIDTH_M = 0.15f;        // TODO: measure
+// Wheel linear speed at full PWM (255), in meters/second. Calibrate by driving at full
+// speed over a known distance and timing it, then v = distance / time.
+static const float MAX_WHEEL_SPEED_MPS = 0.6f;   // TODO: calibrate
+// ==================================================================================
+
 static unsigned long last_command_ms = 0;
 static unsigned long last_telemetry_ms = 0;
+
+// Convert a body velocity command into left/right motor PWM and drive the motors.
+static void drive_from_velocity(const DriveCommand& cmd) {
+  // Differential drive: split body (linear, angular) into per-wheel linear speeds.
+  const float half_track = TRACK_WIDTH_M * 0.5f;
+  float v_left = cmd.linear_velocity - cmd.angular_velocity * half_track;
+  float v_right = cmd.linear_velocity + cmd.angular_velocity * half_track;
+  // Map wheel speed (m/s) to the TB6612 PWM range (-255..255). Clamping happens in
+  // motor_control_set_speed / drive_channel.
+  int16_t pwm_left = (int16_t)(v_left / MAX_WHEEL_SPEED_MPS * 255.0f);
+  int16_t pwm_right = (int16_t)(v_right / MAX_WHEEL_SPEED_MPS * 255.0f);
+  motor_control_set_speed(pwm_left, pwm_right);
+}
 
 void setup() {
   Serial.begin(SERIAL_BAUD);
@@ -43,12 +64,7 @@ void loop() {
     if (cmd.stop) {
       motor_control_stop();
     } else {
-      // TODO: convert (linear_velocity, angular_velocity) into left/right wheel
-      //       speeds (differential drive kinematics) and call setSpeed().
-      //       left  = linear - angular * HALF_TRACK_WIDTH
-      //       right = linear + angular * HALF_TRACK_WIDTH
-      //       then map m/s to the TB6612 PWM range.
-      motor_control_set_speed(0, 0);  // placeholder until kinematics are filled in
+      drive_from_velocity(cmd);
     }
   }
 
