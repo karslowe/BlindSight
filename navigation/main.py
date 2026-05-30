@@ -34,6 +34,35 @@ from planning.return_planner import ReturnPlanner  # noqa: E402
 from slam.slam_frontend import SlamFrontend  # noqa: E402
 
 
+# --- Return-home failsafe -------------------------------------------------------------
+# Automatically trigger the return before the battery dies, so the rover always keeps
+# enough charge to drive itself home even if no operator ever presses "Return". Sized from
+# the Elegoo Smart Robot Car V4 power budget below.
+#
+# THESE ARE CONSERVATIVE PLANNING ESTIMATES, NOT GUARANTEES. Measure a real run (drive the
+# fully-built rover continuously and time it to shutdown) and set MISSION_BUDGET_S to what
+# you actually observe. The numbers here are the starting point:
+#
+#   Pack:        2x 18650 Li-ion in series -> 7.4 V nominal, ~2000 mAh (~11-12 Wh usable
+#                after ~80% depth-of-discharge; cheaper included cells can be far less).
+#   Car only:    2 gear motors + ultrasonic/servo + line sensors + UNO R3 ~= 5 W under
+#                light continuous driving -> ~90 min on the pack.
+#   Car + brain: add the UNO Q doing SLAM + USB camera + Wi-Fi hotspot, ~3-4 W, IF it is
+#                powered from the SAME pack -> total ~8-9 W -> ~45-60 min.
+#
+# The dominant variable is how the UNO Q is powered:
+#   - Brain on the car pack (assumed here):     MISSION_BUDGET_S ~= 45 min.
+#   - Brain on its own battery / power bank:    bump MISSION_BUDGET_S toward ~90 min.
+#
+# We plan for the loaded case and fire at ~65% of the budget, leaving a healthy margin for
+# the return drive itself plus a safety reserve.
+MISSION_BUDGET_S = 45 * 60  # estimated usable runtime with the brain on the car pack
+FAILSAFE_RETURN_S = int(0.65 * MISSION_BUDGET_S)  # ~29 min; auto-return with margin left
+# TODO: upgrade to a true low-battery trigger once the car reports battery_voltage in
+#       CarTelemetry (a voltage divider on a spare analog pin). Voltage sags under motor
+#       load, so filter it; a timeout is the robust backstop regardless.
+
+
 class Orchestrator:
     """Owns the modules and drives the per-tick run loop.
 
@@ -54,11 +83,13 @@ class Orchestrator:
         self.driven_path: list[Pose] = []
         self.start_pose: Pose | None = None
         self.returning = False
+        self.mission_start: float | None = None  # set at power-on for the failsafe clock
 
     def setup(self) -> None:
         """Open hardware links. TODO: open the camera device here too."""
         self.car.connect()
         self.imu.connect()
+        self.mission_start = time.time()  # start the battery-time failsafe clock
         # TODO: open the Logitech USB webcam (cv2.VideoCapture) and store the handle.
 
     def read_frame(self):
@@ -86,6 +117,16 @@ class Orchestrator:
         telemetry = self.car.read_telemetry()
         range_m = telemetry.ultrasonic_distance if telemetry else None
         self.grid.update(pose, range_m)
+
+        # Return-home failsafe: if the battery-time budget is reached and nobody has
+        # commanded a return yet, start it automatically while charge remains.
+        if (
+            not self.returning
+            and self.mission_start is not None
+            and time.time() - self.mission_start >= FAILSAFE_RETURN_S
+        ):
+            print(f"[failsafe] {FAILSAFE_RETURN_S}s battery-time budget reached; returning home")
+            self.request_return()
 
         # 4 / 5. Teleop vs return.
         if self.returning:
