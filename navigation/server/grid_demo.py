@@ -26,11 +26,6 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))  # navigation/ for 
 from schemas.schemas import Pose  # noqa: E402
 from mapping.occupancy_grid import OccupancyGrid  # noqa: E402
 
-try:
-    from app import MapServer  # when run as: python server/grid_demo.py
-except ImportError:  # pragma: no cover
-    from server.app import MapServer
-
 MAX_RANGE = 4.0
 ROOM_HALF = 1.8  # virtual room: walls at +/- this (meters)
 OBSTACLE = (0.6, 1.4, -0.4, 0.4)  # interior block: xmin, xmax, ymin, ymax
@@ -116,6 +111,10 @@ def pose_along_path(distance: float):
 
 
 def main() -> None:
+    try:
+        from app import MapServer  # when run as: python server/grid_demo.py
+    except ImportError:  # pragma: no cover
+        from server.app import MapServer
     server = MapServer()
     server.run_in_thread(port=8000)
     grid = OccupancyGrid(resolution_m=0.05, max_range_m=MAX_RANGE)

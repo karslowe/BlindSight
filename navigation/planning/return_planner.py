@@ -15,14 +15,15 @@ emitting DriveCommands until the goal is reached.
 
 from __future__ import annotations
 
-import heapq
 import math
 import sys
 from pathlib import Path
-from typing import List, Optional, Tuple
+from typing import List, Optional
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "shared"))
 from schemas.schemas import DriveCommand, Pose, Waypoint  # noqa: E402
+
+from planning import pathfind  # noqa: E402
 
 # Planner cost: extra cost to traverse an unobserved cell (prefers known-free routes).
 _UNKNOWN_COST = 4.0
@@ -33,8 +34,6 @@ _MAX_W = 1.0  # rad/s, turn rate
 _K_ANG = 1.6  # proportional steering gain
 # Breadcrumb downsample spacing for the fallback path.
 _BREADCRUMB_SPACING_M = 0.15
-
-_NEIGHBORS = [(-1, 0), (1, 0), (0, -1), (0, 1), (-1, -1), (-1, 1), (1, -1), (1, 1)]
 
 
 def _wrap(angle: float) -> float:
@@ -74,51 +73,12 @@ class ReturnPlanner:
 
     def _astar(self, grid, start_pose: Pose, goal_pose: Pose) -> Optional[List[Waypoint]]:
         """A* over the grid from start_pose's cell to goal_pose's cell. None if no path."""
-        if grid.width == 0:
-            return None
         sc = grid.world_to_cell(start_pose.x, start_pose.y)
         gc = grid.world_to_cell(goal_pose.x, goal_pose.y)
-        if grid.state_at(*sc) == 100 or grid.state_at(*gc) == 100:
-            return None  # an endpoint is inside an obstacle
-
-        def heuristic(c: Tuple[int, int]) -> float:
-            return math.hypot(c[0] - gc[0], c[1] - gc[1])
-
-        open_heap: List[Tuple[float, Tuple[int, int]]] = [(heuristic(sc), sc)]
-        came: dict = {}
-        gscore = {sc: 0.0}
-        found = False
-        while open_heap:
-            _, cur = heapq.heappop(open_heap)
-            if cur == gc:
-                found = True
-                break
-            for dc, dr in _NEIGHBORS:
-                nb = (cur[0] + dc, cur[1] + dr)
-                if not grid.in_bounds(*nb):
-                    continue
-                state = grid.state_at(*nb)
-                if state == 100:
-                    continue  # blocked
-                step = math.hypot(dc, dr)
-                if state == -1:
-                    step += _UNKNOWN_COST  # prefer explored cells
-                tentative = gscore[cur] + step
-                if tentative < gscore.get(nb, math.inf):
-                    came[nb] = cur
-                    gscore[nb] = tentative
-                    heapq.heappush(open_heap, (tentative + heuristic(nb), nb))
-        if not found:
+        cells = pathfind.astar(grid, sc, gc, _UNKNOWN_COST)
+        if not cells:
             return None
-
-        cells = [gc]
-        c = gc
-        while c in came:
-            c = came[c]
-            cells.append(c)
-        cells.reverse()  # now start -> goal
-        cells = _simplify(cells)
-        return [Waypoint(*grid.cell_center(c, r)) for c, r in cells]
+        return pathfind.to_waypoints(grid, pathfind.simplify(cells))
 
     def _reverse_breadcrumbs(self, driven_path: List[Pose]) -> List[Waypoint]:
         """Retrace the driven poses in reverse (current -> start), downsampled."""
@@ -142,8 +102,12 @@ class ReturnPlanner:
         self._cursor = 0
 
     def current_path(self) -> List[Waypoint]:
-        """The installed return path, for embedding in MapUpdate. Empty if none yet."""
+        """The installed path, for embedding in MapUpdate. Empty if none yet."""
         return self._path
+
+    def finished(self) -> bool:
+        """True once every waypoint of the installed path has been reached."""
+        return self._cursor >= len(self._path)
 
     def next_command(self, pose: Pose) -> Optional[DriveCommand]:
         """Produce the next DriveCommand to follow the installed path.
@@ -171,19 +135,3 @@ class ReturnPlanner:
         # Drive forward only when roughly facing the target; turn in place otherwise.
         linear = _MAX_V * max(0.0, math.cos(err))
         return DriveCommand(linear, angular, 0)
-
-
-def _simplify(cells: List[Tuple[int, int]]) -> List[Tuple[int, int]]:
-    """Drop collinear interior cells so the path is a few waypoints, not every cell."""
-    if len(cells) <= 2:
-        return cells
-    out = [cells[0]]
-    for i in range(1, len(cells) - 1):
-        ax, ay = out[-1]
-        bx, by = cells[i]
-        cx, cy = cells[i + 1]
-        cross = (bx - ax) * (cy - by) - (by - ay) * (cx - bx)
-        if cross != 0:  # not collinear -> a real turn, keep it
-            out.append(cells[i])
-    out.append(cells[-1])
-    return out

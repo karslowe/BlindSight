@@ -30,6 +30,7 @@ from bridge.car_link import CarLink  # noqa: E402
 from bridge.modulino_io import ModulinoIO  # noqa: E402
 from mapping.occupancy_grid import OccupancyGrid  # noqa: E402
 from perception.detector import Detector  # noqa: E402
+from planning.explorer import FrontierExplorer  # noqa: E402
 from planning.return_planner import ReturnPlanner  # noqa: E402
 from server.app import MapServer  # noqa: E402
 from slam.slam_frontend import SlamFrontend  # noqa: E402
@@ -82,6 +83,7 @@ class Orchestrator:
         self.slam = SlamFrontend()
         self.grid = OccupancyGrid()
         self.planner = ReturnPlanner()
+        self.explorer = FrontierExplorer()
         self.detector = Detector()
         self.server = MapServer()
         # The phone's "return home" button routes here, the same path as the failsafe.
@@ -93,6 +95,7 @@ class Orchestrator:
         self.start_pose: Pose | None = None
         self.returning = False
         self.mission_start: float | None = None  # set at power-on for the failsafe clock
+        self._explore_ticks = 0  # used to re-plan exploration periodically
 
     def setup(self) -> None:
         """Open hardware links. TODO: open the camera device here too."""
@@ -138,9 +141,8 @@ class Orchestrator:
         if scan:
             self.grid.update(pose, scan)
 
-        # 6. Broadcast the live map (grid + pose + planned path) to any connected phones.
-        return_path = self.planner.current_path() if self.returning else []
-        self.server.publish(self.grid.to_map_update(pose, return_path))
+        # 6. Broadcast the live map (grid + pose + current plan) to any connected phones.
+        self.server.publish(self.grid.to_map_update(pose, self.planner.current_path()))
 
         # Return-home failsafe: if the battery-time budget is reached and nobody has
         # commanded a return yet, start it automatically while charge remains.
@@ -152,22 +154,32 @@ class Orchestrator:
             print(f"[failsafe] {FAILSAFE_RETURN_S}s battery-time budget reached; returning home")
             self.request_return()
 
-        # 4 / 5. Teleop vs return.
+        # 4 / 5. Autonomous behavior: explore the unknown, then drive home.
         if self.returning:
             cmd = self.planner.next_command(pose)
         else:
             self.driven_path.append(pose)
-            cmd = self.teleop_command()
+            cmd = self.autonomous_explore(pose)
         if cmd is not None:
             self.car.send_drive(cmd)
 
-    def teleop_command(self) -> DriveCommand | None:
-        """Get the latest human drive command.
+    def autonomous_explore(self, pose: Pose) -> DriveCommand | None:
+        """Drive the rover toward the next frontier; return home when exploration is done.
 
-        Returns: a DriveCommand, or None if no fresh input.
-        TODO: source this from the web UI / gamepad input path.
+        Re-plans when the current frontier path is finished, or periodically so it adapts
+        to the map it is revealing as it drives. When no reachable frontiers remain, hands
+        off to the return planner.
         """
-        return None
+        self._explore_ticks += 1
+        need_target = not self.planner.current_path() or self.planner.finished()
+        if need_target or self._explore_ticks % 15 == 0:
+            path = self.explorer.next_path(self.grid, pose)
+            if path is None:
+                print("[explore] no reachable frontiers left; returning home")
+                self.request_return()
+                return self.planner.next_command(pose)
+            self.planner.set_path(path)
+        return self.planner.next_command(pose)
 
     def request_return(self) -> None:
         """Handle the single 'go home' command: plan a route and start following it."""

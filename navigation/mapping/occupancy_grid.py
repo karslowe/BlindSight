@@ -166,6 +166,27 @@ class OccupancyGrid:
             return 0
         return -1
 
+    def frontier_cells(self) -> List[Tuple[int, int]]:
+        """Cells on the frontier: known-free cells adjacent to unknown space.
+
+        These are the boundary between what is mapped and what is not - the places worth
+        driving to in order to reveal more. Returns a list of (c, r). Vectorized with numpy.
+        """
+        if self._log is None:
+            return []
+        free = self._log <= _FREE_THRESH
+        occ = self._log >= _OCC_THRESH
+        unknown = ~(free | occ)
+        # A cell has an unknown 4-neighbor if any shifted unknown mask lands on it.
+        neigh_unknown = np.zeros_like(unknown)
+        neigh_unknown[1:, :] |= unknown[:-1, :]
+        neigh_unknown[:-1, :] |= unknown[1:, :]
+        neigh_unknown[:, 1:] |= unknown[:, :-1]
+        neigh_unknown[:, :-1] |= unknown[:, 1:]
+        mask = free & neigh_unknown
+        rs, cs = np.where(mask)
+        return list(zip(cs.tolist(), rs.tolist()))  # (c, r)
+
     # ---- serialization ----
 
     def to_map_update(self, pose: Pose, return_path: Optional[list] = None) -> MapUpdate:
