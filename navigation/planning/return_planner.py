@@ -57,19 +57,23 @@ class ReturnPlanner:
     def plan(self, grid, start: Pose, driven_path: List[Pose]) -> List[Waypoint]:
         """Compute a return route from the current position to the start.
 
+        Primary strategy (chosen for this rover): retrace the breadcrumb trail of poses the
+        rover actually drove, in reverse, back to the start. This stays on proven-safe
+        ground it already covered. Fallback: A* over the map if there is no usable trail.
+
         Inputs:
-            grid: the OccupancyGrid built so far.
+            grid: the OccupancyGrid built so far (used only by the A* fallback).
             start: the Pose recorded at mission start (the goal to return to).
-            driven_path: breadcrumb poses recorded during teleop; the last is "now".
+            driven_path: breadcrumb poses recorded while exploring; the last is "now".
         Output:
             an ordered list of Waypoint from the current position to the goal (home).
         """
-        current = driven_path[-1] if driven_path else start
-        route = self._astar(grid, current, start)
-        if route:
+        route = self._reverse_breadcrumbs(driven_path)
+        if len(route) >= 2:
             return route
-        # Fallback: retrace the breadcrumb trail in reverse back to the start.
-        return self._reverse_breadcrumbs(driven_path)
+        # Fallback: no usable breadcrumb trail, so plan over the map instead.
+        current = driven_path[-1] if driven_path else start
+        return self._astar(grid, current, start) or []
 
     def _astar(self, grid, start_pose: Pose, goal_pose: Pose) -> Optional[List[Waypoint]]:
         """A* over the grid from start_pose's cell to goal_pose's cell. None if no path."""

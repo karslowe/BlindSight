@@ -103,8 +103,9 @@ def step(state, grid, explorer, planner):
                 planner.set_path(path)
         cmd = planner.next_command(pose)
     else:  # return
-        # Fixed goal (home), so only re-plan when the path is empty or has gone stale.
-        if (not planner.current_path()) or _path_blocked(grid, planner):
+        # Retrace the breadcrumb (trusted - the rover already drove it), so do NOT
+        # invalidate it as the map refines; only plan once when we have no path yet.
+        if not planner.current_path():
             planner.set_path(planner.plan(grid, state.start, state.driven))
         cmd = planner.next_command(pose)
 
