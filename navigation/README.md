@@ -46,8 +46,14 @@ Two dev simulators let you build and test the brain with no rover, no car, and n
   car: it accepts `DRV` lines and streams back `TEL` lines from a simulated rover in a
   virtual room (ultrasonic shrinks as it nears a wall, bumper trips on contact, line
   sensors fire near an edge). Point `CarLink` at the printed device path to develop and
-  test `bridge/car_link.py` against it. These are dev-only; delete them once the real
-  hardware is in the loop.
+  test `bridge/car_link.py` against it.
+- `python bridge/drive_test.py --port <path>` streams a scripted DRV sequence and prints
+  the TEL coming back. The same tool drives the fake car (pass its printed PTY path) or
+  the real Elegoo (pass `/dev/ttyACM0` once the firmware parses DRV). This is the bring-up
+  test for the drive path and needs no SLAM, mapping, or brain logic.
+
+The fake car and demo broadcast are dev-only; delete them once the real hardware is in
+the loop.
 
 ## Message schemas
 
