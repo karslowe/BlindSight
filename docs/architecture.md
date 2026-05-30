@@ -12,64 +12,79 @@ in live. Dense 3D reconstruction is a later bonus, only when a network link exis
 Everything mission-critical is on the edge. There is no cloud dependency for driving,
 mapping, planning, or live viewing.
 
-- Edge (always): teleop, SLAM, mapping, return planning, the web server, and the Wi-Fi
-  access point all run on the UNO Q Dragonwing. The phone connects directly to the
+- Edge (always): SLAM runs on the phone (on the rover); mapping, return planning, the web
+  server, the Wi-Fi access point, and motor control all run on the single UNO Q (also on
+  the rover). No network link is needed for any of it. The viewer phone connects to the
   rover's AP.
 - Cloud (optional bonus, later): dense 3D reconstruction. Only attempted when an external
   network link exists. It never blocks the return mission. Not part of this scaffold.
 
 ## Hardware
 
+A single UNO Q is the whole rover computer; the phone is the perception sensor. There is no
+separate Arduino UNO R3 - the UNO Q's onboard microcontroller drives the car directly.
+
 | Part | Role |
 | --- | --- |
-| Elegoo Smart Robot Car V4 | Locomotion. Onboard Arduino UNO R3 + TB6612 motor driver stays as the dedicated motor controller. Servo-mounted ultrasonic and line sensors. No wheel encoders. |
-| Arduino UNO Q | The brain. Qualcomm Dragonwing runs Debian Linux (Python): SLAM, mapping, planning, web server, Wi-Fi AP. Onboard STM32 / RPC "Bridge" handles real-time sensor reads. |
-| Modulino Movement (IMU) | Visual-inertial odometry source. Over Qwiic / I2C. |
-| Modulino Distance (ToF) | Range sensing. Over Qwiic / I2C. |
-| Logitech USB webcam (mono) | The single camera for SLAM. |
+| Arduino UNO Q (single board) | The whole rover computer. Dragonwing (Debian / Python) = the brain: mapping, return planning, web server, Wi-Fi AP. Onboard STM32 "Bridge" = the real-time motor controller: drives the Elegoo expansion board's TB6612 and reads the car's ultrasonic + line sensors. |
+| iPhone 16 Pro (Record3D) | Perception. Rear camera + LiDAR + IMU; ARKit does metric SLAM on-device and streams pose + depth to the UNO Q over USB (or Wi-Fi). This is the single pose authority. |
+| Elegoo Smart Robot Car V4 | Locomotion: 2 motors + TB6612 on the expansion board, servo-mounted ultrasonic, line sensors. No wheel encoders. The UNO Q's STM32 replaces the kit's UNO R3. |
+| 3x Modulino Distance (ToF) | Side coverage at -70 / +70 / +90 deg, complementing the phone's forward depth wedge. Over Qwiic / I2C to the UNO Q. |
 
-Because there are no wheel encoders, odometry is visual-inertial: the mono camera plus the
-IMU. This is why the SLAM frontend ingests both frames and `ImuSample` data.
+The mono webcam and the Modulino Movement (IMU) from the original design are dropped: the
+phone provides the camera and a fused IMU, and ARKit provides the pose, so the rover does
+not implement visual-inertial odometry itself.
+
+Voltage note: the UNO Q's GPIO is 3.3V; the expansion board's 5V sensor outputs (ultrasonic
+echo, line sensors) need a level shifter / divider before reaching the UNO Q pins.
 
 ## Components and data flow
 
 ```
-  webcam (USB) ----frame----+
-                            v
-  Modulino IMU --ImuSample-->  [ slam/slam_frontend.py ]
-                                       | Pose
-                                       v
-  Modulino ToF --range-->     [ mapping/occupancy_grid.py ]
-                                       | grid + Pose
-                          +------------+------------+
-                          |                         |
-                          v                         v
-              [ planning/return_planner.py ]   [ server/app.py ]
-                          | return_path              | MapUpdate (websocket)
-                          +-----------> MapUpdate <---+
-                                                      v
-                                          phone browser (visualization)
+  iPhone 16 Pro (ARKit) --Record3D (USB/Wi-Fi)--> [ slam_frontend wraps it ]
+                                                       | Pose + depth wedge (rays)
+  3x Modulino ToF --Qwiic/I2C--> (side rays) --------->|
+                                                       v
+                                      [ mapping/occupancy_grid.py ]  (one scan / tick)
+                                                       | grid + Pose
+                                  +--------------------+--------------------+
+                                  v                                         v
+                      [ planning/return_planner.py ]              [ server/app.py ]
+                                  | return_path                       | MapUpdate (websocket)
+                                  +----------------> MapUpdate <------+
+                                                                      v
+                                              viewer phone browser (separate Wi-Fi link)
 
-  [ bridge/car_link.py ] <--DriveCommand / CarTelemetry--> Elegoo UNO R3 (car-firmware)
-  [ bridge/modulino_io.py ] <--I2C--> Modulino IMU + ToF
+  [ bridge/car_link.py ] <--DriveCommand / CarTelemetry--> UNO Q STM32 (motor MCU)
+                                                            drives the shield's TB6612,
+                                                            reads ultrasonic + line sensors
 ```
+
+All of the boxes above run on the single UNO Q except the iPhone (perception) and the
+viewer phone (display). `car_link` now talks to the UNO Q's own STM32 over the internal
+bridge rather than an external USB cable to a separate board; the `DriveCommand` /
+`CarTelemetry` contract is unchanged.
 
 ### Run loop (navigation/main.py orchestrator)
 
-1. Read one IMU sample and one camera frame.
-2. `slam_frontend.process(frame, imu)` returns a `Pose` and, on keyframes, map structure.
-3. `occupancy_grid.update(pose, range_reading)` folds new range data into the grid.
-4. While teleoperating, forward the human `DriveCommand` to `car_link`.
+1. Read the latest pose + depth frame from the phone (Record3D stream).
+2. `slam_frontend.process()` returns the phone's `Pose`; the depth wedge is sampled into rays.
+3. Build one scan = the 3 ToF rays + the phone depth-wedge rays, and call
+   `occupancy_grid.update(pose, scan)`.
+4. While teleoperating, forward the human `DriveCommand` to `car_link` (to the STM32).
 5. On the return command, `return_planner.plan(grid, start, current_pose)` produces a
    `return_path`; the orchestrator follows it by emitting `DriveCommand`s.
-6. `server.app` broadcasts a `MapUpdate` (grid + pose + path) to connected phones.
+6. `server.app` broadcasts a `MapUpdate` (grid + pose + path) to connected viewer phones.
 
 ### Failure and fallback
 
-- If SLAM loses tracking or the grid is too sparse to plan, `return_planner` falls back to
+- If ARKit loses tracking or the grid is too sparse to plan, `return_planner` falls back to
   reversing the logged drive path (a breadcrumb list of poses recorded during teleop).
-- The car firmware brakes on loss of serial commands (watchdog) so a brain crash does not
-  leave the motors running.
+- Stale-frame safety: if the phone stream stalls (USB/Wi-Fi hiccup, ARKit relocalizing,
+  thermal throttle), the orchestrator stops/slows rather than acting on an old pose.
+- The motor firmware on the STM32 brakes on loss of drive commands (watchdog) so a brain
+  hang does not leave the motors running. The car's ultrasonic and line sensors remain
+  independent real-time reflexes on the STM32, working even if the phone or brain glitches.
 
 ## Message contract
 
