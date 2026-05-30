@@ -27,7 +27,7 @@ const COLOR = {
   unknown: "#222831",
   free: "#cfd8dc",
   occupied: "#e74c3c",
-  trail: "rgba(236, 240, 241, 0.35)",
+  trail: "rgba(20, 24, 31, 0.85)",
   path: "#2ecc71",
   pose: "#f1c40f",
   poseStroke: "#7a5c00",
@@ -121,8 +121,8 @@ function drawCells(update, view) {
 function drawTrail(view) {
   if (trail.length < 2) return;
   ctx.strokeStyle = COLOR.trail;
-  ctx.lineWidth = 2;
-  ctx.setLineDash([5, 5]);
+  ctx.lineWidth = 2.5;
+  ctx.setLineDash([2, 6]); // dotted
   ctx.beginPath();
   trail.forEach((wp, i) => {
     const p = worldToScreen(wp.x, wp.y, view);
