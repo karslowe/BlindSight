@@ -29,12 +29,15 @@ def astar(
     goal_cell: Tuple[int, int],
     unknown_cost: float = 4.0,
     inflation: int = 0,
+    block_unknown: bool = True,
 ) -> Optional[List[Tuple[int, int]]]:
     """A* from start_cell to goal_cell over the grid. Returns cells start->goal, or None.
 
-    Blocks occupied cells (and, if inflation > 0, cells within that many of an obstacle);
-    adds unknown_cost to stepping into an unobserved cell. The goal cell is always allowed
-    as a target even if inflation would block it, so a goal near a wall stays reachable.
+    Blocks occupied cells (and, if inflation > 0, cells within that many of an obstacle).
+    With block_unknown=True (default) it also refuses to route through unobserved cells, so
+    the rover stays on confirmed-free ground and never plans through walls or unmapped/
+    occluded space. With block_unknown=False, unknown cells are allowed but cost extra
+    (used only as a last-resort fallback). The goal cell is always allowed as a target.
     """
     if grid.width == 0:
         return None
@@ -65,9 +68,12 @@ def astar(
             nb = (cur[0] + dc, cur[1] + dr)
             if not grid.in_bounds(*nb):
                 continue
-            if nb != gc and is_blocked(*nb):
-                continue
             state = grid.state_at(*nb)
+            if nb != gc:
+                if is_blocked(*nb):
+                    continue
+                if block_unknown and state == -1:
+                    continue  # stay on confirmed-free ground
             step = math.hypot(dc, dr)
             if state == -1:
                 step += unknown_cost
@@ -86,6 +92,20 @@ def astar(
         cells.append(c)
     cells.reverse()
     return cells
+
+
+def plan(grid, start_cell: Tuple[int, int], goal_cell: Tuple[int, int]) -> Optional[List[Tuple[int, int]]]:
+    """Tiered A*, safest-first. Returns cells start->goal, or None.
+
+    1) clearance + known-free only (the normal case - keeps the rover safe),
+    2) known-free only (no clearance, for tight spots),
+    3) allow unknown (last resort, only if the rover is otherwise cut off).
+    """
+    for inflation, block_unknown in ((INFLATION_CELLS, True), (0, True), (0, False)):
+        cells = astar(grid, start_cell, goal_cell, inflation=inflation, block_unknown=block_unknown)
+        if cells:
+            return cells
+    return None
 
 
 def simplify(cells: List[Tuple[int, int]]) -> List[Tuple[int, int]]:

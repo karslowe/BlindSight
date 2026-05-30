@@ -27,9 +27,32 @@ from schemas.schemas import DriveCommand, Pose  # noqa: E402
 from mapping.occupancy_grid import OccupancyGrid  # noqa: E402
 from planning.explorer import FrontierExplorer  # noqa: E402
 from planning.return_planner import ReturnPlanner  # noqa: E402
-from server.grid_demo import ROOM_HALF, MAX_RANGE, synthetic_scan  # noqa: E402
+from server.grid_demo import ROOM_HALF, MAX_RANGE, OBSTACLE, synthetic_scan  # noqa: E402
 
 DT = 0.05
+
+
+def _in_obstacle(x: float, y: float) -> bool:
+    """True if (x, y) is inside the virtual interior obstacle (with a small margin)."""
+    xmin, xmax, ymin, ymax = OBSTACLE
+    m = 0.03
+    return (xmin - m) <= x <= (xmax + m) and (ymin - m) <= y <= (ymax + m)
+
+
+def _path_blocked(grid, planner) -> bool:
+    """True if any waypoint of the current path now sits on an occupied cell.
+
+    The map refines as the rover drives, so a path planned earlier can go stale (a cell it
+    routes through becomes a wall). When that happens we re-plan immediately.
+    """
+    occ = grid.blocked_array(0)
+    if occ is None:
+        return False
+    for wp in planner.current_path():
+        c, r = grid.world_to_cell(wp.x, wp.y)
+        if grid.in_bounds(c, r) and occ[r, c]:
+            return True
+    return False
 EXPLORE_BUDGET_TICKS = 1500  # force the return after this many ticks (safety / demo cap)
 
 
@@ -58,7 +81,7 @@ def step(state, grid, explorer, planner):
         if state.recovery == 0:
             planner.set_path([])
     elif mode == "explore":
-        need = (not planner.current_path()) or planner.finished()
+        need = (not planner.current_path()) or planner.finished() or _path_blocked(grid, planner)
         if need or ticks % 15 == 0:
             path = explorer.next_path(grid, pose)
             if path is None or ticks > EXPLORE_BUDGET_TICKS:
@@ -68,19 +91,20 @@ def step(state, grid, explorer, planner):
                 planner.set_path(path)
         cmd = planner.next_command(pose)
     else:  # return
-        if not planner.current_path():
+        # Fixed goal (home), so only re-plan when the path is empty or has gone stale.
+        if (not planner.current_path()) or _path_blocked(grid, planner):
             planner.set_path(planner.plan(grid, state.start, state.driven))
         cmd = planner.next_command(pose)
 
-    # Act (kinematic integration, clamped inside the room).
+    # Act (kinematic integration, clamped inside the room and out of the obstacle).
     if cmd is not None and not cmd.stop:
         theta += cmd.angular_velocity * DT
         nx = x + cmd.linear_velocity * math.cos(theta) * DT
         ny = y + cmd.linear_velocity * math.sin(theta) * DT
-        if abs(nx) < ROOM_HALF - 0.05:
-            x = nx
-        if abs(ny) < ROOM_HALF - 0.05:
-            y = ny
+        cand_x = nx if abs(nx) < ROOM_HALF - 0.05 else x
+        cand_y = ny if abs(ny) < ROOM_HALF - 0.05 else y
+        if not _in_obstacle(cand_x, cand_y):  # the obstacle is solid - can't drive through
+            x, y = cand_x, cand_y
 
     # Stuck detection: if it should be moving but barely has over the window, recover.
     if cmd is not None and cmd.stop:
