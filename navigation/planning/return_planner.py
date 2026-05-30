@@ -43,6 +43,10 @@ class ReturnPlanner:
         self._path = path
         self._cursor = 0
 
+    def current_path(self) -> List[Waypoint]:
+        """The installed return path, for embedding in MapUpdate. Empty if none yet."""
+        return self._path
+
     def next_command(self, pose: Pose) -> Optional[DriveCommand]:
         """Produce the next DriveCommand to follow the installed path.
 

@@ -31,6 +31,7 @@ from bridge.modulino_io import ModulinoIO  # noqa: E402
 from mapping.occupancy_grid import OccupancyGrid  # noqa: E402
 from perception.detector import Detector  # noqa: E402
 from planning.return_planner import ReturnPlanner  # noqa: E402
+from server.app import MapServer  # noqa: E402
 from slam.slam_frontend import SlamFrontend  # noqa: E402
 
 
@@ -77,6 +78,9 @@ class Orchestrator:
         self.grid = OccupancyGrid()
         self.planner = ReturnPlanner()
         self.detector = Detector()
+        self.server = MapServer()
+        # The phone's "return home" button routes here, the same path as the failsafe.
+        self.server.on_return_request = self.request_return
 
         # Breadcrumb trail of poses recorded during teleop. The planner uses this as the
         # reverse-path fallback when the grid is too sparse for A*.
@@ -89,6 +93,7 @@ class Orchestrator:
         """Open hardware links. TODO: open the camera device here too."""
         self.car.connect()
         self.imu.connect()
+        self.server.run_in_thread()  # serve the viz + open the map websocket for phones
         self.mission_start = time.time()  # start the battery-time failsafe clock
         # TODO: open the Logitech USB webcam (cv2.VideoCapture) and store the handle.
 
@@ -117,6 +122,10 @@ class Orchestrator:
         telemetry = self.car.read_telemetry()
         range_m = telemetry.ultrasonic_distance if telemetry else None
         self.grid.update(pose, range_m)
+
+        # 6. Broadcast the live map (grid + pose + planned path) to any connected phones.
+        return_path = self.planner.current_path() if self.returning else []
+        self.server.publish(self.grid.to_map_update(pose, return_path))
 
         # Return-home failsafe: if the battery-time budget is reached and nobody has
         # commanded a return yet, start it automatically while charge remains.
