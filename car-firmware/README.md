@@ -32,26 +32,44 @@ arduino-cli upload  --fqbn arduino:avr:uno -p /dev/ttyACM0 car-firmware
   protocol from the brain, format telemetry lines back.
 - [src/sensors.h](src/sensors.h) / `.cpp`: ultrasonic read, line sensor read.
 
-## Before you flash: fill in the hardware constants
+## Hardware pins: what's connected and where
 
 The firmware logic is implemented (DRV parsing, kinematics, PWM control, ultrasonic timing,
-TEL formatting). Only the hardware-specific values are left as marked constants. Set these
-from the Smart Car V4 schematic / Elegoo example sketch, then flash and calibrate on the
-bench. They all default to `0`, which is wrong (pin 0 is the serial RX line), so the car
-does nothing until you set them.
+TEL formatting). The pin constants are now filled with the **Elegoo Smart Car V4 defaults**.
+The car has two sets of sensors/actuators wired to this MCU:
 
-- [src/motor_control.cpp](src/motor_control.cpp): `PIN_AIN1/AIN2/PWMA/BIN1/BIN2/PWMB/STBY`
-  (TB6612 pins). Bench calibration: `LEFT_INVERT`, `RIGHT_INVERT` (flip a backwards wheel),
-  `SWAP_LEFT_RIGHT` (if channels A/B are reversed).
-- [src/sensors.cpp](src/sensors.cpp): `PIN_ULTRASONIC_TRIG/ECHO`, `PIN_LINE_LEFT/CENTER/RIGHT`,
-  optional `PIN_BUMPER`, and `LINE_ACTIVE_HIGH` polarity.
-- [car-firmware.ino](car-firmware.ino): `TRACK_WIDTH_M` (measure the wheel spacing) and
-  `MAX_WHEEL_SPEED_MPS` (time a full-speed run to calibrate m/s -> PWM).
+| What | Pins (V4 default) | Notes |
+| --- | --- | --- |
+| Motors (TB6612) | PWMA `5`, AIN1 `7`, PWMB `6`, BIN1 `8`, STBY `3` | V4 uses ONE direction pin per motor + PWM + shared standby (not IN1+IN2). |
+| Ultrasonic (HC-SR04) | TRIG `13`, ECHO `12` | On the front servo. **Verify these two** - they vary by revision. |
+| Line sensors (ITR20001 x3) | left `A2`, center `A1`, right `A0` | **Analog** - read with `analogRead` + threshold, not digital. |
+| Servo (ultrasonic pan) | `10` | Not driven by this firmware yet; home it forward in setup. |
 
-Bring-up order: set the motor pins, flash, then drive it from a laptop with
-`navigation/bridge/drive_test.py --port /dev/ttyACM0` and adjust the invert/swap flags
-until it drives correctly. The DRV parser and TEL formatter are hardware-independent and
-already verified against the Python contract.
+The phone (camera + LiDAR + IMU) is the rover's *perception* and connects to the UNO Q's
+Linux side, not here. This MCU only handles the motors and the car's own ultrasonic/line
+sensors.
+
+**Verify before flashing:** these are the documented V4 values, but copy the exact numbers
+from the `DeviceDriverSet_xxx0.h` in your kit's tutorial download to be sure (the ultrasonic
+pins especially). Then calibrate on the bench:
+
+- [src/motor_control.cpp](src/motor_control.cpp): `LEFT_INVERT` / `RIGHT_INVERT` (flip a
+  backwards wheel), `SWAP_LEFT_RIGHT` (if left/right are reversed).
+- [src/sensors.cpp](src/sensors.cpp): `LINE_THRESHOLD` and `LINE_ABOVE_IS_ON` (print the raw
+  `analogRead` values over your floor vs an edge, pick a midpoint and the right polarity).
+- [car-firmware.ino](car-firmware.ino): `TRACK_WIDTH_M` (measure the wheel spacing, ~0.15 m)
+  and `MAX_WHEEL_SPEED_MPS` (time a full-speed run to calibrate m/s -> PWM).
+
+**UNO Q caveat (3.3V vs 5V):** these pins are the UNO-header pins the shield uses, valid on
+a 5V UNO R3. If you flash this to the UNO Q's microcontroller instead, (a) confirm the UNO Q
+maps the same header pins with Arduino numbering, and (b) **level-shift the 5V sensor
+outputs** (the ultrasonic ECHO line, and the line sensors if powered at 5V) before they
+reach the 3.3V GPIO, or you can damage a pin.
+
+Bring-up order: flash, then drive it from a laptop with
+`navigation/bridge/drive_test.py --port /dev/cu.usbmodemXXXX` and adjust the invert/swap
+flags until it drives correctly. The DRV parser and TEL formatter are hardware-independent
+and already verified against the Python contract.
 
 ## Message schemas
 

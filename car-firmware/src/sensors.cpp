@@ -2,35 +2,41 @@
  * sensors - read the Elegoo V4 onboard sensors into a CarTelemetry record.
  * See sensors.h for the interface contract.
  *
- * The logic is complete. Fill in the pin constants below from the V4 pinout, then check
- * the LINE_ACTIVE_HIGH polarity on the bench (drive over a line and watch the flags).
+ * The V4's three line-tracking sensors (ITR20001) are ANALOG: read with analogRead and
+ * threshold, not digitalRead. The ultrasonic is an HC-SR04 on the front servo.
+ *
+ * Pin values are the Elegoo Smart Car V4 defaults. The line pins (A0-A2) are well known;
+ * VERIFY the ultrasonic Trig/Echo against the DeviceDriverSet_xxx0.h in your kit's tutorial
+ * (they vary by revision). On the UNO Q (3.3V) the 5V echo line needs level shifting - see
+ * the README.
  */
 #include "sensors.h"
 
 #include <Arduino.h>
 
-// ===================== SET FROM THE SMART CAR V4 HARDWARE =====================
-// Default 0 is WRONG (pin 0 is serial RX). Set the real pins before flashing.
-static const uint8_t PIN_ULTRASONIC_TRIG = 0;  // TODO
-static const uint8_t PIN_ULTRASONIC_ECHO = 0;  // TODO
-static const uint8_t PIN_LINE_LEFT = 0;        // TODO
-static const uint8_t PIN_LINE_CENTER = 0;      // TODO
-static const uint8_t PIN_LINE_RIGHT = 0;       // TODO
-// Optional stall/bumper switch. The stock V4 has none; leave 0 to always report bumper=0.
-static const uint8_t PIN_BUMPER = 0;           // 0 = not wired
+// ===== Elegoo Smart Car V4 pin map (VERIFY against DeviceDriverSet_xxx0.h) =====
+// Line tracking (ITR20001) - ANALOG sensors:
+static const uint8_t PIN_LINE_LEFT = A2;
+static const uint8_t PIN_LINE_CENTER = A1;
+static const uint8_t PIN_LINE_RIGHT = A0;
+// Ultrasonic HC-SR04 on the front servo. *** CONFIRM these two in your V4 code. ***
+static const uint8_t PIN_ULTRASONIC_TRIG = 13;
+static const uint8_t PIN_ULTRASONIC_ECHO = 12;
+// Optional stall/bumper switch. Stock V4 has none; leave 0 to always report bumper=0.
+static const uint8_t PIN_BUMPER = 0;
 
-// Polarity: set false if the line sensors read LOW (instead of HIGH) when over a line.
-static const bool LINE_ACTIVE_HIGH = true;
-// Ultrasonic echo timeout in microseconds. ~30000 us is roughly a 5 m max range.
+// Line sensor analog threshold (0..1023). Above it counts as "line/edge seen". Tune on the
+// bench: print the raw analogRead values over your floor vs an edge and pick a midpoint.
+static const int LINE_THRESHOLD = 500;
+static const bool LINE_ABOVE_IS_ON = true;  // flip if your sensors read the other way
+// Ultrasonic echo timeout (us). ~30000 us is roughly a 5 m max range.
 static const unsigned long ECHO_TIMEOUT_US = 30000UL;
-// =============================================================================
+// ==============================================================================
 
 void sensors_init() {
   pinMode(PIN_ULTRASONIC_TRIG, OUTPUT);
   pinMode(PIN_ULTRASONIC_ECHO, INPUT);
-  pinMode(PIN_LINE_LEFT, INPUT);
-  pinMode(PIN_LINE_CENTER, INPUT);
-  pinMode(PIN_LINE_RIGHT, INPUT);
+  // Analog line pins need no pinMode for analogRead().
   if (PIN_BUMPER != 0) {
     pinMode(PIN_BUMPER, INPUT_PULLUP);
   }
@@ -52,9 +58,10 @@ static float read_ultrasonic_m() {
   return dur * 0.0001715f;
 }
 
+// Read one analog line sensor and threshold it to 0/1.
 static int read_line(uint8_t pin) {
-  int v = digitalRead(pin);
-  bool on = LINE_ACTIVE_HIGH ? (v == HIGH) : (v == LOW);
+  int v = analogRead(pin);
+  bool on = LINE_ABOVE_IS_ON ? (v > LINE_THRESHOLD) : (v < LINE_THRESHOLD);
   return on ? 1 : 0;
 }
 
