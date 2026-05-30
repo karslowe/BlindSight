@@ -45,6 +45,12 @@ def step(state, grid, explorer, planner):
     state.driven.append(Pose(x=x, y=y, theta=theta, timestamp=0.0))
 
     # Decide.
+    # The "Return to start" button: cut exploration short and head home now.
+    if state.return_requested and mode == "explore" and state.start is not None:
+        planner.set_path(planner.plan(grid, state.start, state.driven))
+        mode = "return"
+        state.return_requested = False
+
     if state.recovery > 0:
         # Unstick: back up and turn for a few ticks, then force a re-plan off the obstacle.
         state.recovery -= 1
@@ -99,6 +105,7 @@ class _State:
         self.driven = []
         self.recent = deque(maxlen=40)  # recent positions, for stuck detection
         self.recovery = 0  # ticks remaining in a back-up-and-turn recovery
+        self.return_requested = False  # set by the "Return to start" button
 
     def __iter__(self):
         return iter((self.x, self.y, self.theta, self.mode, self.ticks))
@@ -113,10 +120,11 @@ def main() -> None:
     explorer = FrontierExplorer()
     planner = ReturnPlanner()
     server = MapServer()
+    state = _State()
+    # Wire the phone's "Return to start" button to force an early return.
+    server.on_return_request = lambda: setattr(state, "return_requested", True)
     server.run_in_thread(port=8000)
     print("Serving on http://localhost:8000  (open /?live)")
-
-    state = _State()
     announced = ""
     try:
         while True:
