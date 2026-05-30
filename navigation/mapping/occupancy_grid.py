@@ -205,6 +205,28 @@ class OccupancyGrid:
             blocked = b
         return blocked
 
+    def proximity_cost(self, radius: int = 5):
+        """Cost field that is high right next to obstacles and fades to 0 in open space.
+
+        Added to A* step costs so paths prefer the MIDDLE of free corridors instead of
+        hugging walls. None if nothing is mapped yet.
+        """
+        if self._log is None:
+            return None
+        occupied = self._log >= _OCC_THRESH
+        cost = np.zeros(occupied.shape, dtype=np.float32)
+        mask = occupied.copy()
+        for k in range(radius):
+            b = mask.copy()
+            b[1:, :] |= mask[:-1, :]
+            b[:-1, :] |= mask[1:, :]
+            b[:, 1:] |= mask[:, :-1]
+            b[:, :-1] |= mask[:, 1:]
+            ring = b & ~mask  # cells exactly (k+1) cells from an obstacle
+            cost[ring] = float(radius - k)  # closer to a wall -> higher cost
+            mask = b
+        return cost
+
     # ---- serialization ----
 
     def to_map_update(self, pose: Pose, return_path: Optional[list] = None) -> MapUpdate:

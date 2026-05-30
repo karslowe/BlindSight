@@ -120,16 +120,17 @@ def step(state, grid, explorer, planner):
         elif not (_in_obstacle(cand_x, cand_y) or _blocked_cell(grid, cand_x, cand_y)):
             x, y = cand_x, cand_y  # normal driving stops at the obstacle, never enters it
 
-    # Stuck detection: if it should be moving but barely has over the window, recover.
-    if cmd is not None and cmd.stop:
-        state.recent.clear()  # legitimately stopped (arrived) - not stuck
-    else:
+    # Stuck detection: only while actually trying to drive forward. Turning in place (which
+    # does not change position) is intentional, not stuck, so it must not trigger recovery.
+    if cmd is not None and not cmd.stop and cmd.linear_velocity > 0.05:
         state.recent.append((x, y))
         if state.recovery == 0 and len(state.recent) == state.recent.maxlen:
             if math.hypot(x - state.recent[0][0], y - state.recent[0][1]) < 0.08:
                 state.recovery = 12
                 state.recent.clear()
                 planner.set_path([])  # drop the stale path now; re-plan after recovery
+    else:
+        state.recent.clear()  # stopped or turning in place - not stuck
 
     state.x, state.y, state.theta, state.mode, state.ticks = x, y, theta, mode, ticks + 1
     return cmd

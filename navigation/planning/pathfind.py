@@ -22,6 +22,9 @@ _NEIGHBORS = [(-1, 0), (1, 0), (0, -1), (0, 1), (-1, -1), (-1, 1), (1, -1), (1, 
 # rover is never routed flush against a wall/obstacle (the cause of getting wedged), with
 # room for the simple controller to overshoot a turn without hitting it.
 INFLATION_CELLS = 3
+# How strongly to prefer the middle of open space over hugging walls. Multiplies the
+# proximity_cost field; higher = paths bow further from obstacles.
+WALL_WEIGHT = 0.7
 
 
 def astar(
@@ -31,6 +34,7 @@ def astar(
     unknown_cost: float = 4.0,
     inflation: int = 0,
     block_unknown: bool = True,
+    wall_weight: float = 0.0,
 ) -> Optional[List[Tuple[int, int]]]:
     """A* from start_cell to goal_cell over the grid. Returns cells start->goal, or None.
 
@@ -38,7 +42,8 @@ def astar(
     With block_unknown=True (default) it also refuses to route through unobserved cells, so
     the rover stays on confirmed-free ground and never plans through walls or unmapped/
     occluded space. With block_unknown=False, unknown cells are allowed but cost extra
-    (used only as a last-resort fallback). The goal cell is always allowed as a target.
+    (used only as a last-resort fallback). wall_weight > 0 adds a cost near obstacles so the
+    path prefers the middle of free corridors. The goal cell is always allowed as a target.
     """
     if grid.width == 0:
         return None
@@ -47,6 +52,7 @@ def astar(
         return None  # an endpoint is inside an obstacle
 
     blocked = grid.blocked_array(inflation) if inflation > 0 else None
+    prox = grid.proximity_cost() if wall_weight > 0 else None
 
     def is_blocked(c: int, r: int) -> bool:
         if blocked is not None and grid.in_bounds(c, r) and blocked[r, c]:
@@ -78,6 +84,8 @@ def astar(
             step = math.hypot(dc, dr)
             if state == -1:
                 step += unknown_cost
+            if prox is not None:
+                step += wall_weight * float(prox[nb[1], nb[0]])  # prefer the middle
             tentative = gscore[cur] + step
             if tentative < gscore.get(nb, math.inf):
                 came[nb] = cur
@@ -103,7 +111,10 @@ def plan(grid, start_cell: Tuple[int, int], goal_cell: Tuple[int, int]) -> Optio
     3) allow unknown (last resort, only if the rover is otherwise cut off).
     """
     for inflation, block_unknown in ((INFLATION_CELLS, True), (0, True), (0, False)):
-        cells = astar(grid, start_cell, goal_cell, inflation=inflation, block_unknown=block_unknown)
+        cells = astar(
+            grid, start_cell, goal_cell,
+            inflation=inflation, block_unknown=block_unknown, wall_weight=WALL_WEIGHT,
+        )
         if cells:
             return cells
     return None
