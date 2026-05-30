@@ -59,6 +59,11 @@ from slam.slam_frontend import SlamFrontend  # noqa: E402
 # the return drive itself plus a safety reserve.
 MISSION_BUDGET_S = 45 * 60  # estimated usable runtime with the brain on the car pack
 FAILSAFE_RETURN_S = int(0.65 * MISSION_BUDGET_S)  # ~29 min; auto-return with margin left
+
+# Side ToF beam angles (rad) relative to the rover heading: -70 / +70 / +90 degrees.
+# Nominal; replace with the MEASURED mounted angles. The list order must match the Qwiic
+# chain order (index 0 = the module physically at the first angle). See bridge/AGENT.MD.
+TOF_ANGLES = [-1.22, 1.22, 1.57]
 # TODO: upgrade to a true low-battery trigger once the car reports battery_voltage in
 #       CarTelemetry (a voltage divider on a spare analog pin). Voltage sags under motor
 #       load, so filter it; a timeout is the robust backstop regardless.
@@ -119,14 +124,19 @@ class Orchestrator:
         if self.start_pose is None:
             self.start_pose = pose  # remember where "home" is
 
-        # 3. Mapping: prefer the phone's dense depth; fall back to the ultrasonic range.
+        # 3. Mapping: assemble ONE scan (rover-frame rays) and fuse it in a single update.
+        #    Per AGENT.MD every sensor contributes (angle_offset, range_m) rays.
         telemetry = self.car.read_telemetry()
-        depth = self.slam.last_depth()
-        if depth is not None:
-            self.grid.update_from_depth(pose, depth[0], depth[1])
-        else:
-            range_m = telemetry.ultrasonic_distance if telemetry else None
-            self.grid.update(pose, range_m)
+        scan: list[tuple[float, float]] = []
+        # (Step 2) Side ToF: the 3 Modulino Distance beams at fixed angles.
+        # scan += [(a, r) for a, r in zip(TOF_ANGLES, self.imu.read_distances()) if r is not None]
+        # (Step 3) Phone depth wedge sampled into rays.
+        # scan += self.slam.last_depth_scan()
+        # Fallback while Steps 2-3 are stubbed: the car's forward ultrasonic as one ray.
+        if telemetry and telemetry.ultrasonic_distance is not None and telemetry.ultrasonic_distance >= 0:
+            scan.append((0.0, telemetry.ultrasonic_distance))
+        if scan:
+            self.grid.update(pose, scan)
 
         # 6. Broadcast the live map (grid + pose + planned path) to any connected phones.
         return_path = self.planner.current_path() if self.returning else []
