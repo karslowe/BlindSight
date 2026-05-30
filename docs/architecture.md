@@ -2,10 +2,11 @@
 
 ## Goal
 
-A human drives the rover into an unknown space. The rover builds a metric map on the edge,
-on the rover itself, with no network. On a single command it plans a route over that map
-and drives itself back to the start. A phone on the rover's own Wi-Fi watches the map fill
-in live. Dense 3D reconstruction is a later bonus, only when a network link exists.
+The rover drives itself into an unknown space (autonomous frontier exploration - no human
+driving), building a metric map on the edge, on the rover itself, with no network. When the
+space is covered it plans a route over that map and drives itself back to the start. A phone
+on the rover's own Wi-Fi watches the map fill in live. Dense 3D reconstruction is a later
+bonus, only when a network link exists.
 
 ## The edge / cloud split
 
@@ -71,15 +72,33 @@ bridge rather than an external USB cable to a separate board; the `DriveCommand`
 2. `slam_frontend.process()` returns the phone's `Pose`; the depth wedge is sampled into rays.
 3. Build one scan = the 3 ToF rays + the phone depth-wedge rays, and call
    `occupancy_grid.update(pose, scan)`.
-4. While teleoperating, forward the human `DriveCommand` to `car_link` (to the STM32).
-5. On the return command, `return_planner.plan(grid, start, current_pose)` produces a
-   `return_path`; the orchestrator follows it by emitting `DriveCommand`s.
+4. While exploring, `explorer.next_path(grid, pose)` routes to the nearest frontier (the
+   edge of the mapped area); the orchestrator follows it, emitting `DriveCommand`s to
+   `car_link` (to the STM32), revealing more of the space and re-planning as it goes.
+5. When no reachable frontiers remain - or the battery-time failsafe fires -
+   `return_planner.plan(grid, start, current_pose)` produces a `return_path`, and the
+   orchestrator follows it home.
 6. `server.app` broadcasts a `MapUpdate` (grid + pose + path) to connected viewer phones.
+
+### Autonomy (no human in the loop)
+
+The rover decides where to go on its own. There are two phases:
+
+- Explore: `planning/explorer.py` finds the frontiers - known-free cells adjacent to
+  unknown space - clusters them, and routes to the nearest reachable one with A*
+  (`planning/pathfind.py`). Driving there reveals more of the space; it re-plans as the map
+  grows. This replaces human teleoperation entirely.
+- Return: when no reachable frontiers remain (the space is covered), or the battery-time
+  failsafe fires, it switches to `planning/return_planner.py` and drives home.
+
+Both phases share the same A* pathfinder and the same carrot-follow controller; only the
+goal differs (a frontier vs. the start). See `server/autonomy_demo.py` for the full loop
+running against a synthetic room.
 
 ### Failure and fallback
 
 - If ARKit loses tracking or the grid is too sparse to plan, `return_planner` falls back to
-  reversing the logged drive path (a breadcrumb list of poses recorded during teleop).
+  reversing the logged drive path (a breadcrumb list of poses recorded while exploring).
 - Stale-frame safety: if the phone stream stalls (USB/Wi-Fi hiccup, ARKit relocalizing,
   thermal throttle), the orchestrator stops/slows rather than acting on an old pose.
 - The motor firmware on the STM32 brakes on loss of drive commands (watchdog) so a brain

@@ -1,8 +1,9 @@
 # Recon Rover
 
-An autonomous-return ground rover. A human drives it into an unknown space while it
-builds a metric map on the edge. Then, with one command, it computes a route over the
-map it just built and drives itself back to the start, with no network required.
+A fully autonomous exploratory ground rover. It drives itself into an unknown space,
+building a metric map on the edge as it goes (frontier exploration - no human driving).
+When the space is covered, it computes a route over the map it just built and drives
+itself back to the start, with no network required.
 
 A phone connects to the rover's own Wi-Fi hotspot to watch the map fill in live. A dense
 3D reconstruction is an optional bonus tier, built later, only when a network link exists.
@@ -50,14 +51,16 @@ source of truth reused by all three components).
 
 ## Data flow walkthrough
 
-1. The human teleoperates the rover. The brain (UNO Q) streams `DriveCommand` messages
-   over USB serial to the car (UNO R3), which turns them into motor outputs.
-2. The car streams `CarTelemetry` back (ultrasonic distance, line and bumper flags).
-3. The mono webcam frames plus `ImuSample` data from the Modulino IMU feed the SLAM
-   frontend, which emits a `Pose` per frame.
-4. `mapping` fuses each `Pose` with range data into an occupancy grid.
-5. On the return command, `planning` runs A* over that grid to the logged start, with a
-   reverse-of-the-driven-path fallback, and produces a list of waypoints.
+1. The phone (iPhone Pro, rear camera + LiDAR) runs ARKit and streams pose + depth to the
+   brain (UNO Q) via Record3D. The SLAM frontend reshapes that into a `Pose` per frame.
+2. `mapping` fuses each `Pose` with depth + ToF rays into an occupancy grid.
+3. `exploration` finds the frontiers (edges of the mapped area), and `planning` runs A* to
+   the nearest one; the brain drives itself there, revealing more, and repeats.
+4. The brain streams `DriveCommand` messages to the car's motor MCU (the UNO Q's STM32),
+   which turns them into motor outputs; the car streams `CarTelemetry` back.
+5. When no reachable frontiers remain (or the battery-time failsafe fires), `planning` runs
+   A* over the grid back to the logged start, with a reverse-of-the-driven-path fallback,
+   and the brain drives itself home.
 6. The `server` packs the grid, current pose, and planned path into a `MapUpdate` and
    pushes it over a websocket to any phone connected to the rover's Wi-Fi AP.
 7. `visualization` renders the grid and path live in the browser.
