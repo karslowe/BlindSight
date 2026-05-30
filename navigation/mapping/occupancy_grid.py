@@ -140,6 +140,32 @@ class OccupancyGrid:
             v = int(self._log[r, c]) + delta
             self._log[r, c] = max(_L_MIN, min(_L_MAX, v))
 
+    # ---- queries (used by the planner) ----
+
+    def in_bounds(self, c: int, r: int) -> bool:
+        return 0 <= c < self.width and 0 <= r < self.height
+
+    def world_to_cell(self, wx: float, wy: float) -> Tuple[int, int]:
+        return self._world_to_cell(wx, wy)
+
+    def cell_center(self, c: int, r: int) -> Tuple[float, float]:
+        """World coordinate of the center of cell (c, r)."""
+        return (
+            self.origin["x"] + (c + 0.5) * self.resolution_m,
+            self.origin["y"] + (r + 0.5) * self.resolution_m,
+        )
+
+    def state_at(self, c: int, r: int) -> int:
+        """Cell state: -1 unknown, 0 free, 100 occupied. Out of bounds / unmapped = unknown."""
+        if self._log is None or not self.in_bounds(c, r):
+            return -1
+        v = int(self._log[r, c])
+        if v >= _OCC_THRESH:
+            return 100
+        if v <= _FREE_THRESH:
+            return 0
+        return -1
+
     # ---- serialization ----
 
     def to_map_update(self, pose: Pose, return_path: Optional[list] = None) -> MapUpdate:
