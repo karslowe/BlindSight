@@ -28,7 +28,7 @@ const FORCE_FAKE = params.has("fake");
 const FORCE_LIVE = params.has("live");
 
 let socket = null;
-let stopFakeFeed = null;
+let fakeController = null; // { stop, requestReturn } when the dev feed is running
 
 function setStatus(text) {
   const hud = document.getElementById("hud");
@@ -43,10 +43,10 @@ function dispatch(update) {
 
 // ---- DEV FALLBACK (remove for production) -------------------------------------------
 function startFakeFallback(reason) {
-  if (stopFakeFeed) return; // already running
+  if (fakeController) return; // already running
   console.warn(`[ws_client] using simulated map feed (${reason}).`);
   setStatus("Recon Rover - SIMULATED feed (no rover connected)");
-  stopFakeFeed = startFakeFeed(dispatch);
+  fakeController = startFakeFeed(dispatch);
 }
 // -------------------------------------------------------------------------------------
 
@@ -80,7 +80,7 @@ export function connect() {
   socket.addEventListener("open", () => {
     settled = true;
     clearTimeout(timeout);
-    if (stopFakeFeed) { stopFakeFeed(); stopFakeFeed = null; } // real data wins
+    if (fakeController) { fakeController.stop(); fakeController = null; } // real data wins
     setStatus("Recon Rover - connected, waiting for map...");
   });
 
@@ -119,6 +119,10 @@ export function requestReturn() {
   if (socket && socket.readyState === WebSocket.OPEN) {
     socket.send(JSON.stringify({ type: "ReturnHome" }));
     setStatus("Recon Rover - returning to start...");
+  } else if (fakeController) {
+    // Dev / demo mode: drive the simulated rover home.
+    fakeController.requestReturn();
+    setStatus("Recon Rover - SIMULATED: returning to start...");
   } else {
     console.warn("[ws_client] no live rover connection; return command ignored.");
   }

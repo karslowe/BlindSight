@@ -1,35 +1,42 @@
 /*
- * fake_map.js - a DEV-ONLY fake MapUpdate source.
+ * fake_map.js - a DEV-ONLY fake MapUpdate source with a full mission story.
  *
  * Generates animated MapUpdate frames that match docs/message-schemas.md exactly, so you
- * can build and polish the viewer with zero dependency on the navigation team's server or
- * any hardware. A simulated rover drives a loop while the occupancy grid fills in around
- * it, exactly like the real mapping pipeline will feed you.
+ * can build, polish, and DEMO the viewer with zero dependency on the navigation team's
+ * server or any hardware.
  *
- * INTEGRATION: when the real rover server is up, this file is not loaded at all. ws_client
- * only falls back to it when no websocket is reachable (dev), or when the page URL has
- * ?fake. Delete this folder for production; nothing else depends on it.
+ * The story it plays out:
+ *   EXPLORE  - a simulated rover drives a loop while the occupancy grid fills in around
+ *              it. return_path is empty (per the contract: empty until a return is asked).
+ *   RETURN   - when requestReturn() is called (the "Return to start" button), the rover
+ *              computes a route back along the path it actually drove and follows it home,
+ *              with that route shown in return_path so the viewer draws it bright green.
  *
- * The frames it emits are indistinguishable, to viewer.js, from frames off the real rover.
+ * INTEGRATION: when the real rover server is up, this file is not loaded. ws_client only
+ * falls back to it when no websocket is reachable (dev) or with ?fake in the URL. Delete
+ * this folder for production; nothing else depends on it.
  */
 
-// ---- Simulated world geometry (everything in SI: meters, radians) ----
 const WIDTH = 64; // cells
 const HEIGHT = 48; // cells
 const RESOLUTION_M = 0.05; // 5 cm per cell -> 3.2 m x 2.4 m arena
 const ORIGIN = { x: -1.6, y: -1.2 }; // world coord of cell (0,0), the lower-left corner
 
-// Cell encoding, matching the schema: -1 unknown, 0 free, 100 occupied.
 const UNKNOWN = -1;
 const FREE = 0;
 const OCCUPIED = 100;
 
-// How far the rover "sees" and reveals cells each step.
 const SENSOR_RADIUS_M = 0.55;
+const SPEED_MPS = 0.25;
 
-// ---- Build the ground-truth map the rover will gradually discover ----
-// Outer walls plus one interior obstacle block. The rover never knows this directly;
-// it only reveals cells within SENSOR_RADIUS_M as it drives.
+// The rover's exploration path: a rectangular loop through the free space. PATH[0] is home.
+const PATH = [
+  { x: -1.2, y: -0.8 },
+  { x: 1.1, y: -0.8 },
+  { x: 1.1, y: 0.8 },
+  { x: -1.2, y: 0.8 },
+];
+
 function buildTruth() {
   const truth = new Int8Array(WIDTH * HEIGHT).fill(FREE);
   for (let r = 0; r < HEIGHT; r++) {
@@ -42,22 +49,13 @@ function buildTruth() {
   return truth;
 }
 
-// ---- The rover's path: a rectangular loop through the free space ----
-const PATH = [
-  { x: -1.2, y: -0.8 },
-  { x: 1.1, y: -0.8 },
-  { x: 1.1, y: 0.8 },
-  { x: -1.2, y: 0.8 },
-];
-
-// World point -> integer cell (col, row). Row 0 is the bottom (origin is lower-left).
 function worldToCell(wx, wy) {
-  const c = Math.floor((wx - ORIGIN.x) / RESOLUTION_M);
-  const r = Math.floor((wy - ORIGIN.y) / RESOLUTION_M);
-  return { c, r };
+  return {
+    c: Math.floor((wx - ORIGIN.x) / RESOLUTION_M),
+    r: Math.floor((wy - ORIGIN.y) / RESOLUTION_M),
+  };
 }
 
-// Center of cell (c, r) in world meters.
 function cellCenter(c, r) {
   return {
     x: ORIGIN.x + (c + 0.5) * RESOLUTION_M,
@@ -65,7 +63,6 @@ function cellCenter(c, r) {
   };
 }
 
-// Reveal every truth cell within the sensor radius of (wx, wy) into the known grid.
 function revealAround(known, truth, wx, wy) {
   const rad = SENSOR_RADIUS_M;
   const min = worldToCell(wx - rad, wy - rad);
@@ -83,30 +80,37 @@ function revealAround(known, truth, wx, wy) {
   }
 }
 
-// Position and heading at a given distance traveled along the looping PATH.
-function poseAlongPath(distance) {
-  // Build cumulative segment lengths once.
+// Position and heading at `distance` traveled along a polyline of {x,y} points.
+// loop=true wraps forever (exploration); loop=false clamps at the end (returning).
+function pointAlongPolyline(points, distance, loop) {
   const segs = [];
   let total = 0;
-  for (let i = 0; i < PATH.length; i++) {
-    const a = PATH[i];
-    const b = PATH[(i + 1) % PATH.length];
+  const n = loop ? points.length : points.length - 1;
+  for (let i = 0; i < n; i++) {
+    const a = points[i];
+    const b = points[(i + 1) % points.length];
     const len = Math.hypot(b.x - a.x, b.y - a.y);
     segs.push({ a, b, len, start: total });
     total += len;
   }
-  let d = distance % total; // wrap to loop forever
+  if (total === 0) {
+    return { x: points[0].x, y: points[0].y, theta: 0, done: true };
+  }
+  let d = loop ? ((distance % total) + total) % total : Math.min(distance, total);
+  const done = !loop && distance >= total;
   for (const s of segs) {
-    if (d <= s.start + s.len) {
-      const t = (d - s.start) / s.len;
-      const x = s.a.x + (s.b.x - s.a.x) * t;
-      const y = s.a.y + (s.b.y - s.a.y) * t;
-      const theta = Math.atan2(s.b.y - s.a.y, s.b.x - s.a.x);
-      return { x, y, theta };
+    if (d <= s.start + s.len || s === segs[segs.length - 1]) {
+      const t = s.len > 0 ? (d - s.start) / s.len : 0;
+      return {
+        x: s.a.x + (s.b.x - s.a.x) * t,
+        y: s.a.y + (s.b.y - s.a.y) * t,
+        theta: Math.atan2(s.b.y - s.a.y, s.b.x - s.a.x),
+        done,
+      };
     }
   }
   const last = segs[segs.length - 1];
-  return { x: last.b.x, y: last.b.y, theta: 0 };
+  return { x: last.b.x, y: last.b.y, theta: 0, done: true };
 }
 
 /*
@@ -114,25 +118,52 @@ function poseAlongPath(distance) {
  *
  * Input:
  *   onUpdate: callback invoked with one MapUpdate object per tick (schema-shaped).
- *   intervalMs: tick period (default 150 ms, ~6.7 Hz).
+ *   intervalMs: tick period (default 150 ms).
  * Output:
- *   a stop() function that halts the feed.
+ *   a controller { stop(), requestReturn() }:
+ *     stop()          - halt the feed.
+ *     requestReturn() - switch the rover into RETURN mode (the button calls this).
  */
 export function startFakeFeed(onUpdate, intervalMs = 150) {
+  if (window.__resetTrail) window.__resetTrail(); // fresh history for this run
+
   const truth = buildTruth();
   const known = new Int8Array(WIDTH * HEIGHT).fill(UNKNOWN);
-  let distance = 0;
-  const speed = 0.25; // m/s, simulated drive speed
+
+  let mode = "explore"; // "explore" | "return"
+  let exploreDist = 0;
+  let returnDist = 0;
+  let returnRoute = null; // [{x,y}, ...] from current position back to home
+  const drivenTrail = []; // the rover's own record of where it actually drove
+  const TRAIL_SPACING_M = 0.06;
+
+  function recordDriven(x, y) {
+    const last = drivenTrail[drivenTrail.length - 1];
+    if (!last || Math.hypot(x - last.x, y - last.y) >= TRAIL_SPACING_M) {
+      drivenTrail.push({ x, y });
+    }
+  }
+
+  const dt = intervalMs / 1000;
 
   const tick = () => {
-    distance += speed * (intervalMs / 1000);
-    const p = poseAlongPath(distance);
-    revealAround(known, truth, p.x, p.y);
+    let pose;
+    let returnPath = [];
 
-    // The "return path" shown to the viewer: the loop waypoints ahead of the rover.
-    const returnPath = PATH.map((wp) => ({ x: wp.x, y: wp.y }));
+    if (mode === "explore") {
+      exploreDist += SPEED_MPS * dt;
+      pose = pointAlongPolyline(PATH, exploreDist, true);
+      recordDriven(pose.x, pose.y);
+    } else {
+      returnDist += SPEED_MPS * dt;
+      pose = pointAlongPolyline(returnRoute, returnDist, false);
+      // Show the full planned route home so the viewer draws it bright green.
+      returnPath = returnRoute.map((wp) => ({ x: wp.x, y: wp.y }));
+    }
 
-    const update = {
+    revealAround(known, truth, pose.x, pose.y);
+
+    onUpdate({
       type: "MapUpdate",
       width: WIDTH,
       height: HEIGHT,
@@ -141,20 +172,35 @@ export function startFakeFeed(onUpdate, intervalMs = 150) {
       cells: Array.from(known),
       pose: {
         type: "Pose",
-        x: p.x,
-        y: p.y,
-        theta: p.theta,
+        x: pose.x,
+        y: pose.y,
+        theta: pose.theta,
         covariance: [0, 0, 0, 0, 0, 0, 0, 0, 0],
         timestamp: performance.now() / 1000,
       },
       return_path: returnPath,
-    };
-    onUpdate(update);
+    });
   };
 
   tick();
   const handle = setInterval(tick, intervalMs);
-  return function stop() {
-    clearInterval(handle);
+
+  return {
+    stop() {
+      clearInterval(handle);
+    },
+    requestReturn() {
+      if (mode === "return") return;
+      // Plan the route home: retrace the driven trail in reverse back to the start.
+      const reversed = drivenTrail.slice().reverse();
+      if (reversed.length >= 2) {
+        returnRoute = reversed;
+      } else {
+        // Pressed almost immediately: just head straight to home.
+        returnRoute = [{ x: drivenTrail[0]?.x ?? PATH[0].x, y: drivenTrail[0]?.y ?? PATH[0].y }, { ...PATH[0] }];
+      }
+      returnDist = 0;
+      mode = "return";
+    },
   };
 }
