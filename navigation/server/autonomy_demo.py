@@ -69,31 +69,26 @@ EXPLORE_BUDGET_TICKS = 1500  # force the return after this many ticks (safety / 
 
 # An imaginary target object in the room. The rover's simulated YOLO "sees" it when it is
 # within range, in the forward camera field of view, and not occluded by the obstacle.
-TARGET = (-1.2, 1.0, "person")  # (x, y, label)
-DETECT_RANGE_M = 1.6  # the camera can recognize the target within this distance
-DETECT_FOV_HALF = 0.6  # forward camera half-FoV, radians (~35 deg)
+TARGET = (1.6, 0.0, "person")  # (x, y, label) - behind the obstacle, so the rover must
+#                                explore and round the obstacle before it can see it.
+DETECT_RANGE_M = 2.0  # the camera recognizes the target within this distance
 # False: explore the WHOLE space, marking the target when seen, then return when done.
 # True: head home the moment the target is found (the "search and return" base case).
-RETURN_ON_TARGET = False
+RETURN_ON_TARGET = True
 
 
 def _detect_target(x: float, y: float, theta: float):
-    """Geometric stand-in for YOLO: is the target visible from (x, y, theta)? Returns the
-    target tuple if detected, else None. On the real rover, detector.detect(frame) + depth
-    does this from the camera."""
+    """Geometric stand-in for YOLO. Detected when the rover is within range of the target
+    and has clear line of sight (not occluded by the obstacle). FoV is intentionally NOT
+    required here so the sim reliably "sees" the target as the rover passes near it; the
+    real camera has a field of view, handled by detector.detect(frame). Returns the target
+    tuple if detected, else None."""
     tx, ty, _label = TARGET
     dx, dy = tx - x, ty - y
     dist = math.hypot(dx, dy)
-    if dist < 1e-6 or dist > DETECT_RANGE_M:
+    if dist > DETECT_RANGE_M:
         return None
     bearing = math.atan2(dy, dx)
-    err = bearing - theta
-    while err > math.pi:
-        err -= 2 * math.pi
-    while err < -math.pi:
-        err += 2 * math.pi
-    if abs(err) > DETECT_FOV_HALF:  # outside the forward field of view
-        return None
     blocked = _ray_box(x, y, bearing, *OBSTACLE)  # occluded by the obstacle?
     if blocked is not None and blocked < dist:
         return None
