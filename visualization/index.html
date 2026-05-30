@@ -1,0 +1,39 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+  <title>Recon Rover - Live Map</title>
+  <style>
+    html, body { margin: 0; height: 100%; background: #111; color: #eee;
+                 font-family: system-ui, sans-serif; overflow: hidden; }
+    #map { display: block; width: 100vw; height: 100vh; }
+    #hud { position: fixed; top: 0; left: 0; padding: 10px 14px; font-size: 14px; }
+    #return { position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%);
+              padding: 14px 28px; font-size: 16px; border: 0; border-radius: 8px;
+              background: #2d6cdf; color: white; }
+  </style>
+
+  <!--
+    Plain static path (recommended): load Three.js from a CDN, no build step.
+    Uncomment to use the point-cloud renderer. The 2D canvas grid in viewer.js
+    works without Three.js, so this is optional to start.
+  -->
+  <!--
+  <script type="importmap">
+    { "imports": { "three": "https://unpkg.com/three@0.169.0/build/three.module.js" } }
+  </script>
+  -->
+</head>
+<body>
+  <!-- viewer.js renders into this canvas. -->
+  <canvas id="map"></canvas>
+
+  <div id="hud">Recon Rover - waiting for map...</div>
+  <button id="return">Return to start</button>
+
+  <!-- Order matters: ws_client wires the socket, viewer draws the frames. -->
+  <script type="module" src="src/ws_client.js"></script>
+  <script type="module" src="src/viewer.js"></script>
+</body>
+</html>

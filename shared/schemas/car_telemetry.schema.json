@@ -1,0 +1,18 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://recon-rover/schemas/car_telemetry.schema.json",
+  "title": "CarTelemetry",
+  "description": "Car -> brain. Sensor record over USB serial. Wire format: 'TEL <ultrasonic_distance> <bumper> <line_left> <line_center> <line_right> <timestamp>'.",
+  "type": "object",
+  "properties": {
+    "type": { "const": "CarTelemetry" },
+    "ultrasonic_distance": { "type": "number", "description": "Forward range in m from the servo-mounted ultrasonic. -1 if no echo." },
+    "bumper": { "type": "integer", "enum": [0, 1], "description": "Bumper or stall flag." },
+    "line_left": { "type": "integer", "enum": [0, 1] },
+    "line_center": { "type": "integer", "enum": [0, 1] },
+    "line_right": { "type": "integer", "enum": [0, 1] },
+    "timestamp": { "type": "number", "description": "Car-side time of reading, seconds." }
+  },
+  "required": ["ultrasonic_distance", "bumper", "line_left", "line_center", "line_right", "timestamp"],
+  "additionalProperties": false
+}

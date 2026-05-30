@@ -1,0 +1,24 @@
+# Recon Rover - navigation brain dependencies (Python 3, runs on the UNO Q Dragonwing).
+# Pins are reasonable starting points for a hackathon; bump as needed.
+
+# Vision and math
+opencv-python==4.10.0.84
+numpy==1.26.4
+
+# Car link over USB serial
+pyserial==3.5
+
+# Web server + live map websocket to the phone
+fastapi==0.115.0
+uvicorn==0.30.6
+websockets==13.0
+
+# --- SLAM / visual-inertial odometry: chosen later, not pinned here. ---
+# The frontend in slam/slam_frontend.py is an interface only. Candidate backends to
+# swap in: RTAB-Map (rtabmap), ORB-SLAM3 (python bindings), OpenVINS, or Kimera.
+# Add the chosen package here once decided.
+
+# --- IMU / Modulino driver: chosen later. ---
+# bridge/modulino_io.py reads the Modulino Movement (IMU) and Modulino Distance (ToF)
+# over Qwiic / I2C. Add the Arduino Modulino Python library or a smbus2-based driver here.
+# e.g. smbus2==0.4.3

@@ -1,0 +1,19 @@
+{
+  "name": "recon-rover-visualization",
+  "version": "0.1.0",
+  "description": "Live map viewer for the Recon Rover, served statically from the rover and viewed on a phone.",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "//": "Optional bundler scripts. The default path is plain static: open index.html and load three from a CDN. Only use these if you choose to bundle.",
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "three": "^0.169.0"
+  },
+  "devDependencies": {
+    "vite": "^5.4.0"
+  }
+}

@@ -1,0 +1,44 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://recon-rover/schemas/map_update.schema.json",
+  "title": "MapUpdate",
+  "description": "mapping -> server -> viz. Full payload pushed to the phone over the websocket: occupancy grid plus current pose plus planned return path.",
+  "type": "object",
+  "properties": {
+    "type": { "const": "MapUpdate" },
+    "width": { "type": "integer", "minimum": 0, "description": "Grid width in cells." },
+    "height": { "type": "integer", "minimum": 0, "description": "Grid height in cells." },
+    "resolution_m": { "type": "number", "exclusiveMinimum": 0, "description": "Edge length of one cell, meters per cell." },
+    "origin": {
+      "type": "object",
+      "description": "Map-frame coordinate of cell (0,0), the grid lower-left corner.",
+      "properties": {
+        "x": { "type": "number" },
+        "y": { "type": "number" }
+      },
+      "required": ["x", "y"],
+      "additionalProperties": false
+    },
+    "cells": {
+      "type": "array",
+      "items": { "type": "integer", "enum": [-1, 0, 100] },
+      "description": "Row-major, length width*height. -1 unknown, 0 free, 100 occupied."
+    },
+    "pose": { "$ref": "pose.schema.json" },
+    "return_path": {
+      "type": "array",
+      "description": "Planned return route, ordered start of travel to goal. Empty until a return is requested.",
+      "items": {
+        "type": "object",
+        "properties": {
+          "x": { "type": "number" },
+          "y": { "type": "number" }
+        },
+        "required": ["x", "y"],
+        "additionalProperties": false
+      }
+    }
+  },
+  "required": ["width", "height", "resolution_m", "origin", "cells", "pose", "return_path"],
+  "additionalProperties": false
+}

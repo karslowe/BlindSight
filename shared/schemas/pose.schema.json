@@ -1,0 +1,23 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://recon-rover/schemas/pose.schema.json",
+  "title": "Pose",
+  "description": "slam -> mapping, planning. Estimated 2D pose of the rover in the map frame.",
+  "type": "object",
+  "properties": {
+    "type": { "const": "Pose" },
+    "x": { "type": "number", "description": "Position x in the map frame, meters." },
+    "y": { "type": "number", "description": "Position y in the map frame, meters." },
+    "theta": { "type": "number", "description": "Heading in radians, CCW from the map x-axis." },
+    "covariance": {
+      "type": "array",
+      "items": { "type": "number" },
+      "minItems": 9,
+      "maxItems": 9,
+      "description": "Row-major 3x3 covariance over (x, y, theta)."
+    },
+    "timestamp": { "type": "number", "description": "Time of the estimate, seconds." }
+  },
+  "required": ["x", "y", "theta", "timestamp"],
+  "additionalProperties": false
+}

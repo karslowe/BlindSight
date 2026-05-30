@@ -1,0 +1,38 @@
+# ---- Python ----
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+venv/
+.venv/
+env/
+.pytest_cache/
+.mypy_cache/
+
+# ---- Node / JS ----
+node_modules/
+dist/
+build/
+.parcel-cache/
+npm-debug.log*
+yarn-error.log*
+
+# ---- Arduino build artifacts ----
+*.hex
+*.elf
+*.bin
+*.o
+*.a
+build/
+.build/
+
+# ---- OS cruft ----
+.DS_Store
+Thumbs.db
+desktop.ini
+*~
+
+# ---- Editor ----
+.vscode/
+.idea/
+*.swp

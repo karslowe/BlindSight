@@ -1,0 +1,15 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://recon-rover/schemas/drive_command.schema.json",
+  "title": "DriveCommand",
+  "description": "Brain -> car. Velocity command sent over USB serial. Wire format: 'DRV <linear_velocity> <angular_velocity> <stop>'.",
+  "type": "object",
+  "properties": {
+    "type": { "const": "DriveCommand" },
+    "linear_velocity": { "type": "number", "description": "Forward velocity in m/s, forward positive." },
+    "angular_velocity": { "type": "number", "description": "Yaw rate in rad/s, counter-clockwise positive." },
+    "stop": { "type": "integer", "enum": [0, 1], "description": "Optional hard stop. 1 overrides velocities and brakes." }
+  },
+  "required": ["linear_velocity", "angular_velocity"],
+  "additionalProperties": false
+}

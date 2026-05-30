@@ -1,0 +1,27 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://recon-rover/schemas/imu_sample.schema.json",
+  "title": "ImuSample",
+  "description": "modulino -> slam. One visual-inertial IMU reading from the Modulino Movement sensor.",
+  "type": "object",
+  "properties": {
+    "type": { "const": "ImuSample" },
+    "accel": {
+      "type": "array",
+      "items": { "type": "number" },
+      "minItems": 3,
+      "maxItems": 3,
+      "description": "Linear acceleration (x, y, z) in m/s^2."
+    },
+    "gyro": {
+      "type": "array",
+      "items": { "type": "number" },
+      "minItems": 3,
+      "maxItems": 3,
+      "description": "Angular velocity (x, y, z) in rad/s."
+    },
+    "timestamp": { "type": "number", "description": "Time of the sample, seconds." }
+  },
+  "required": ["accel", "gyro", "timestamp"],
+  "additionalProperties": false
+}
