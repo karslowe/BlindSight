@@ -50,7 +50,10 @@ class FrontierExplorer:
             key=lambda t: (t[0] - rc[0]) ** 2 + (t[1] - rc[1]) ** 2,
         )
         for target in targets:
-            cells = pathfind.astar(grid, rc, target)
+            # Prefer a path with obstacle clearance; if wedged, retry without it.
+            cells = pathfind.astar(grid, rc, target, inflation=pathfind.INFLATION_CELLS)
+            if not cells:
+                cells = pathfind.astar(grid, rc, target, inflation=0)
             if cells:
                 return pathfind.to_waypoints(grid, pathfind.simplify(cells))
         return None

@@ -187,6 +187,24 @@ class OccupancyGrid:
         rs, cs = np.where(mask)
         return list(zip(cs.tolist(), rs.tolist()))  # (c, r)
 
+    def blocked_array(self, inflate_cells: int = 0):
+        """Boolean (height, width) mask: True where occupied, dilated by inflate_cells.
+
+        Used by the planner to keep a safety margin from walls/obstacles so the rover is
+        never routed flush against them. None if nothing is mapped yet.
+        """
+        if self._log is None:
+            return None
+        blocked = self._log >= _OCC_THRESH
+        for _ in range(max(0, inflate_cells)):
+            b = blocked.copy()
+            b[1:, :] |= blocked[:-1, :]
+            b[:-1, :] |= blocked[1:, :]
+            b[:, 1:] |= blocked[:, :-1]
+            b[:, :-1] |= blocked[:, 1:]
+            blocked = b
+        return blocked
+
     # ---- serialization ----
 
     def to_map_update(self, pose: Pose, return_path: Optional[list] = None) -> MapUpdate:

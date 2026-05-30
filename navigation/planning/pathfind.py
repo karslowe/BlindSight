@@ -18,22 +18,36 @@ from schemas.schemas import Waypoint  # noqa: E402
 
 _NEIGHBORS = [(-1, 0), (1, 0), (0, -1), (0, 1), (-1, -1), (-1, 1), (1, -1), (1, 1)]
 
+# Default obstacle inflation (cells). At 0.05 m/cell this keeps ~0.1 m of clearance so the
+# rover is never routed flush against a wall/obstacle (the cause of getting wedged).
+INFLATION_CELLS = 2
+
 
 def astar(
     grid,
     start_cell: Tuple[int, int],
     goal_cell: Tuple[int, int],
     unknown_cost: float = 4.0,
+    inflation: int = 0,
 ) -> Optional[List[Tuple[int, int]]]:
     """A* from start_cell to goal_cell over the grid. Returns cells start->goal, or None.
 
-    Blocks occupied cells; adds unknown_cost to stepping into an unobserved cell.
+    Blocks occupied cells (and, if inflation > 0, cells within that many of an obstacle);
+    adds unknown_cost to stepping into an unobserved cell. The goal cell is always allowed
+    as a target even if inflation would block it, so a goal near a wall stays reachable.
     """
     if grid.width == 0:
         return None
     sc, gc = tuple(start_cell), tuple(goal_cell)
     if grid.state_at(*sc) == 100 or grid.state_at(*gc) == 100:
         return None  # an endpoint is inside an obstacle
+
+    blocked = grid.blocked_array(inflation) if inflation > 0 else None
+
+    def is_blocked(c: int, r: int) -> bool:
+        if blocked is not None and grid.in_bounds(c, r) and blocked[r, c]:
+            return True
+        return grid.state_at(c, r) == 100
 
     def heuristic(c: Tuple[int, int]) -> float:
         return math.hypot(c[0] - gc[0], c[1] - gc[1])
@@ -51,9 +65,9 @@ def astar(
             nb = (cur[0] + dc, cur[1] + dr)
             if not grid.in_bounds(*nb):
                 continue
-            state = grid.state_at(*nb)
-            if state == 100:
+            if nb != gc and is_blocked(*nb):
                 continue
+            state = grid.state_at(*nb)
             step = math.hypot(dc, dr)
             if state == -1:
                 step += unknown_cost

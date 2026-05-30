@@ -18,11 +18,12 @@ from __future__ import annotations
 import math
 import sys
 import time
+from collections import deque
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "shared"))
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from schemas.schemas import Pose  # noqa: E402
+from schemas.schemas import DriveCommand, Pose  # noqa: E402
 from mapping.occupancy_grid import OccupancyGrid  # noqa: E402
 from planning.explorer import FrontierExplorer  # noqa: E402
 from planning.return_planner import ReturnPlanner  # noqa: E402
@@ -44,7 +45,13 @@ def step(state, grid, explorer, planner):
     state.driven.append(Pose(x=x, y=y, theta=theta, timestamp=0.0))
 
     # Decide.
-    if mode == "explore":
+    if state.recovery > 0:
+        # Unstick: back up and turn for a few ticks, then force a re-plan off the obstacle.
+        state.recovery -= 1
+        cmd = DriveCommand(-0.12, 0.8, 0)
+        if state.recovery == 0:
+            planner.set_path([])
+    elif mode == "explore":
         need = (not planner.current_path()) or planner.finished()
         if need or ticks % 15 == 0:
             path = explorer.next_path(grid, pose)
@@ -54,7 +61,9 @@ def step(state, grid, explorer, planner):
             else:
                 planner.set_path(path)
         cmd = planner.next_command(pose)
-    else:
+    else:  # return
+        if not planner.current_path():
+            planner.set_path(planner.plan(grid, state.start, state.driven))
         cmd = planner.next_command(pose)
 
     # Act (kinematic integration, clamped inside the room).
@@ -67,6 +76,16 @@ def step(state, grid, explorer, planner):
         if abs(ny) < ROOM_HALF - 0.05:
             y = ny
 
+    # Stuck detection: if it should be moving but barely has over the window, recover.
+    if cmd is not None and cmd.stop:
+        state.recent.clear()  # legitimately stopped (arrived) - not stuck
+    else:
+        state.recent.append((x, y))
+        if state.recovery == 0 and len(state.recent) == state.recent.maxlen:
+            if math.hypot(x - state.recent[0][0], y - state.recent[0][1]) < 0.08:
+                state.recovery = 10
+                state.recent.clear()
+
     state.x, state.y, state.theta, state.mode, state.ticks = x, y, theta, mode, ticks + 1
     return cmd
 
@@ -78,6 +97,8 @@ class _State:
         self.ticks = 0
         self.start = None
         self.driven = []
+        self.recent = deque(maxlen=40)  # recent positions, for stuck detection
+        self.recovery = 0  # ticks remaining in a back-up-and-turn recovery
 
     def __iter__(self):
         return iter((self.x, self.y, self.theta, self.mode, self.ticks))

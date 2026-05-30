@@ -75,7 +75,10 @@ class ReturnPlanner:
         """A* over the grid from start_pose's cell to goal_pose's cell. None if no path."""
         sc = grid.world_to_cell(start_pose.x, start_pose.y)
         gc = grid.world_to_cell(goal_pose.x, goal_pose.y)
-        cells = pathfind.astar(grid, sc, gc, _UNKNOWN_COST)
+        # Prefer a path with obstacle clearance; if wedged (none found), retry without it.
+        cells = pathfind.astar(grid, sc, gc, _UNKNOWN_COST, pathfind.INFLATION_CELLS)
+        if not cells:
+            cells = pathfind.astar(grid, sc, gc, _UNKNOWN_COST, 0)
         if not cells:
             return None
         return pathfind.to_waypoints(grid, pathfind.simplify(cells))
