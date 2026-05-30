@@ -32,8 +32,11 @@ _REACH_RADIUS_M = 0.12  # a waypoint counts as reached within this distance
 _MAX_V = 0.22  # m/s, forward speed
 _MAX_W = 1.0  # rad/s, turn rate
 _K_ANG = 1.6  # proportional steering gain
-# Breadcrumb downsample spacing for the fallback path.
+# Breadcrumb downsample spacing.
 _BREADCRUMB_SPACING_M = 0.15
+# Trim the breadcrumb once it reaches within this of home, so the route ends cleanly at
+# start instead of retracing the rover's early maneuvering around the start point.
+_HOME_RADIUS_M = 0.2
 
 
 def _wrap(angle: float) -> float:
@@ -85,17 +88,25 @@ class ReturnPlanner:
         return pathfind.to_waypoints(grid, pathfind.simplify(cells))
 
     def _reverse_breadcrumbs(self, driven_path: List[Pose]) -> List[Waypoint]:
-        """Retrace the driven poses in reverse (current -> start), downsampled."""
+        """Retrace the driven poses in reverse (current -> start), downsampled and trimmed.
+
+        Stops as soon as the trail reaches the home neighborhood and snaps to the exact
+        start, so the route ends cleanly at start instead of retracing the early wiggles
+        the rover made around the start point (which would draw the line past the dot).
+        """
+        if not driven_path:
+            return []
+        home = driven_path[0]
         out: List[Waypoint] = []
         last: Optional[Pose] = None
         for p in reversed(driven_path):
             if last is None or math.hypot(p.x - last.x, p.y - last.y) >= _BREADCRUMB_SPACING_M:
                 out.append(Waypoint(p.x, p.y))
                 last = p
-        if driven_path:
-            home = driven_path[0]
-            if not out or (out[-1].x, out[-1].y) != (home.x, home.y):
-                out.append(Waypoint(home.x, home.y))
+                if math.hypot(p.x - home.x, p.y - home.y) < _HOME_RADIUS_M:
+                    break  # reached home; trim the rest
+        if not out or (out[-1].x, out[-1].y) != (home.x, home.y):
+            out.append(Waypoint(home.x, home.y))  # end exactly at start
         return out
 
     # ---- following ----

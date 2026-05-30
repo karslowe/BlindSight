@@ -107,7 +107,10 @@ def step(state, grid, explorer, planner):
         # invalidate it as the map refines; only plan once when we have no path yet.
         if not planner.current_path():
             planner.set_path(planner.plan(grid, state.start, state.driven))
-        cmd = planner.next_command(pose)
+        if math.hypot(x - state.start.x, y - state.start.y) < 0.15:
+            cmd = DriveCommand(0.0, 0.0, stop=1)  # arrived home - stop directly at start
+        else:
+            cmd = planner.next_command(pose)
 
     # Act (kinematic integration, clamped inside the room and out of the obstacle).
     if cmd is not None and not cmd.stop:
