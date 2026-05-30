@@ -141,8 +141,10 @@ class Orchestrator:
         if scan:
             self.grid.update(pose, scan)
 
-        # 6. Broadcast the live map (grid + pose + current plan) to any connected phones.
-        self.server.publish(self.grid.to_map_update(pose, self.planner.current_path()))
+        # 6. Broadcast the live map. The route home goes in return_path ONLY while
+        #    returning (empty while exploring), so the viewer can tell the two apart.
+        return_path = self.planner.current_path() if self.returning else []
+        self.server.publish(self.grid.to_map_update(pose, return_path))
 
         # Return-home failsafe: if the battery-time budget is reached and nobody has
         # commanded a return yet, start it automatically while charge remains.

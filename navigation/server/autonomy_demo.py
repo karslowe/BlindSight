@@ -176,9 +176,12 @@ def main() -> None:
             if state.mode != announced:
                 print(f"[autonomy] mode -> {state.mode}")
                 announced = state.mode
+            # return_path carries the route home ONLY while returning, so the viewer can
+            # tell exploring from returning (and the green "Route home" only shows then).
+            route = planner.current_path() if state.mode == "return" else []
             server.publish(grid.to_map_update(
                 Pose(x=state.x, y=state.y, theta=state.theta, timestamp=time.time()),
-                planner.current_path(),
+                route,
             ))
             time.sleep(DT)
     except KeyboardInterrupt:
