@@ -74,3 +74,95 @@ def depth_to_points(
     pts[:, 1] = my
     pts[:, 2] = mz
     return pts.reshape(-1).tolist()
+
+
+# ======================================================================================
+# Full 6-DoF projection. Unlike depth_to_points() above (which uses only the 2D pose and
+# assumes a LEVEL camera, so a tilted phone ramps vertical surfaces), this uses the phone's
+# COMPLETE orientation (the 4x4 camera->world transform), so pitch and roll are handled and
+# walls stay vertical at any hold/mount angle. This is the projection the live demos use.
+# ======================================================================================
+
+# Record3D's depth + intrinsics use the vision camera convention (X right, Y DOWN, Z forward).
+# ARKit's camera->world is in the ARKit camera convention (X right, Y UP, Z backward). Convert
+# vision-camera points to ARKit-camera by flipping Y and Z (a 180 deg rotation about X).
+_VISION_TO_ARKIT_CAM = np.array([1.0, -1.0, -1.0], dtype=np.float32)
+
+# CALIBRATION KNOBS - flip a sign here if the first real scan comes out wrong, then re-run:
+#   * whole scene UPSIDE DOWN -> set _UP_SIGN = -1.0
+#   * whole scene MIRRORED    -> negate _Y_SIGN
+# ARKit world is Y-up; we map it to our ground plane (map x, map y) plus height (map z).
+_UP_SIGN = 1.0
+_Y_SIGN = -1.0  # ARKit forward (-Z) -> +map y, by default
+
+
+def _world_to_map(wx, wy, wz):
+    """ARKit world (X, Y-up, Z) -> our map frame (x, y on the ground, z = height). Linear, so
+    it applies to both positions and direction vectors. The single place the axis convention
+    lives, shared by the point cloud, the mesh, and the pose."""
+    return wx, _Y_SIGN * wz, _UP_SIGN * wy
+
+
+def project_depth_grid(depth, intrinsics, cam_to_world, stride=4,
+                       min_range_m=0.2, max_range_m=4.0):
+    """Back-project a depth frame to MAP-FRAME points using the full 6-DoF camera transform,
+    KEEPING the pixel-grid structure so callers can both list points and stitch triangles.
+
+    Inputs: depth HxW meters; intrinsics 3x3; cam_to_world 4x4 (PhoneFrame.extrinsic, ARKit
+    world, Y up); stride; range band.
+    Returns (mx, my, mz, valid, z), each shaped (gh, gw). mz is height above the floor.
+    """
+    d = np.asarray(depth, dtype=np.float32)
+    h, w = d.shape
+    fx, fy = float(intrinsics[0][0]), float(intrinsics[1][1])
+    cx, cy = float(intrinsics[0][2]), float(intrinsics[1][2])
+
+    ys, xs = np.mgrid[0:h:stride, 0:w:stride]
+    z = d[ys, xs]
+    valid = np.isfinite(z) & (z > min_range_m) & (z < max_range_m)
+    # Invalid pixels are zeroed (masked out by `valid` on return); errstate keeps numpy's
+    # float32-matmul FPE flag from emitting spurious divide/overflow warnings on them.
+    with np.errstate(invalid="ignore", divide="ignore", over="ignore"):
+        zs = np.where(valid, z, 0.0).astype(np.float32)
+        # Vision camera frame (X right, Y down, Z forward) -> ARKit camera (Y up, Z back).
+        cam = np.stack([
+            ((xs - cx) * zs / fx) * _VISION_TO_ARKIT_CAM[0],
+            ((ys - cy) * zs / fy) * _VISION_TO_ARKIT_CAM[1],
+            zs * _VISION_TO_ARKIT_CAM[2],
+        ], axis=0).reshape(3, -1)
+        M = np.asarray(cam_to_world, dtype=np.float32)
+        world = M[:3, :3] @ cam + M[:3, 3:4]  # 3 x N in ARKit world (Y up)
+
+    gh, gw = z.shape
+    mx, my, mz = _world_to_map(world[0], world[1], world[2])
+    return (mx.reshape(gh, gw).astype(np.float32),
+            my.reshape(gh, gw).astype(np.float32),
+            mz.reshape(gh, gw).astype(np.float32), valid, z)
+
+
+def depth_to_points_6dof(depth, intrinsics, cam_to_world, stride=8,
+                         min_range_m=0.2, max_range_m=4.0) -> List[float]:
+    """Flat [x0,y0,z0, ...] map-frame point list via the full 6-DoF transform. The 6-DoF
+    counterpart of depth_to_points(); use with PhoneFrame.extrinsic so tilted views render
+    correctly instead of ramping vertical surfaces."""
+    if np.asarray(depth).ndim != 2:
+        return []
+    mx, my, mz, valid, _ = project_depth_grid(
+        depth, intrinsics, cam_to_world, stride, min_range_m, max_range_m
+    )
+    if not valid.any():
+        return []
+    pts = np.stack([mx[valid], my[valid], mz[valid]], axis=1).astype(np.float32)
+    return pts.reshape(-1).tolist()
+
+
+def pose_from_extrinsic(cam_to_world):
+    """Project the full camera transform to a ground-plane (x, y, theta) IN THE SAME map frame
+    as the cloud/mesh, so the rover marker, grid, and 3D geometry all line up. Position is the
+    camera's mapped location; theta is its viewing direction (ARKit camera -Z) on the ground.
+    Returns (x, y, theta)."""
+    M = np.asarray(cam_to_world, dtype=np.float32)
+    px, py, _h = _world_to_map(float(M[0, 3]), float(M[1, 3]), float(M[2, 3]))
+    fx_w, fy_w, fz_w = -float(M[0, 2]), -float(M[1, 2]), -float(M[2, 2])  # camera forward in world
+    fmx, fmy, _fh = _world_to_map(fx_w, fy_w, fz_w)
+    return float(px), float(py), float(math.atan2(fmy, fmx))

@@ -67,7 +67,7 @@ def main() -> None:
                 grid._init_grid(start)  # seed floor bounds so the viewer has a ground plane
                 print(f"first frame: depth {frame.depth.shape}, "
                       f"range {float(frame.depth.min()):.2f}..{float(frame.depth.max()):.2f}")
-            mesher.add_frame(frame.depth, frame.intrinsics, frame.pose)
+            mesher.add_frame(frame.depth, frame.intrinsics, frame.extrinsic)
             frames += 1
             if frames % PUBLISH_EVERY == 0:
                 home = {"x": start.x, "y": start.y}

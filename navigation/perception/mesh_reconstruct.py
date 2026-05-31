@@ -22,10 +22,11 @@ Navigation never uses this. Output: {"vertices": [x,y,z, ...], "faces": [i,j,k, 
 
 from __future__ import annotations
 
-import math
 from typing import Optional
 
 import numpy as np
+
+from .pointcloud import project_depth_grid
 
 
 class DepthMesher:
@@ -74,29 +75,16 @@ class DepthMesher:
         if len(self._faces) < self.max_faces:
             self._faces.append((a, b, c))
 
-    def add_frame(self, depth, intrinsics, pose) -> None:
-        """Fold one depth frame (HxW meters) taken at `pose` into the accumulated mesh."""
+    def add_frame(self, depth, intrinsics, cam_to_world) -> None:
+        """Fold one depth frame (HxW meters) plus its full 6-DoF camera transform into the mesh."""
         if self.full:
             return
-        d = np.asarray(depth, dtype=np.float32)
-        if d.ndim != 2:
+        if np.asarray(depth).ndim != 2:
             return
-        h, w = d.shape
-        s = self.stride
-        fx, fy = float(intrinsics[0][0]), float(intrinsics[1][1])
-        cx, cy = float(intrinsics[0][2]), float(intrinsics[1][2])
-
-        ys, xs = np.mgrid[0:h:s, 0:w:s]
-        z = d[ys, xs]
-        valid = np.isfinite(z) & (z > self.min_range_m) & (z < self.max_range_m)
-
-        # Back-project to the map frame (identical to pointcloud.depth_to_points).
-        cam_x = (xs - cx) * z / fx
-        cam_y = (ys - cy) * z / fy
-        ct, st = math.cos(pose.theta), math.sin(pose.theta)
-        mx = pose.x + z * ct - cam_x * st
-        my = pose.y + z * st + cam_x * ct
-        mz = -cam_y  # camera Y is down -> world up
+        # Full 6-DoF back-projection, keeping the pixel grid so we can stitch triangles.
+        mx, my, mz, valid, z = project_depth_grid(
+            depth, intrinsics, cam_to_world, self.stride, self.min_range_m, self.max_range_m
+        )
 
         # Voxel keys for welding.
         v = self.voxel_m

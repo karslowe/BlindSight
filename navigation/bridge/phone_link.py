@@ -27,7 +27,9 @@ from typing import Optional
 import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "shared"))
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))  # navigation, for perception.*
 from schemas.schemas import Pose  # noqa: E402
+from perception.pointcloud import pose_from_extrinsic  # noqa: E402
 
 try:
     from record3d import Record3DStream
@@ -44,6 +46,7 @@ class PhoneFrame:
     pose: Pose  # camera pose in the map frame (already reshaped to our 2D Pose)
     depth: np.ndarray  # HxW float32, meters; 0 or NaN = invalid
     intrinsics: np.ndarray  # 3x3 camera matrix, for projecting depth into the grid
+    extrinsic: np.ndarray  # 4x4 camera->world (ARKit world, Y up); full 6-DoF for the 3D viz
     timestamp: float
 
 
@@ -58,25 +61,37 @@ def _intrinsics_to_mat(coeffs) -> np.ndarray:
     return np.array([[fx, 0.0, cx], [0.0, fy, cy], [0.0, 0.0, 1.0]], dtype=np.float32)
 
 
-def _pose_from_camera(cam, timestamp: float) -> Pose:
-    """Convert a Record3D camera transform into our ground-plane 2D Pose.
+def _field(cam, name):
+    """Read a Record3D pose field, tolerant of attribute (cam.qx) or key (cam['qx']) access."""
+    return cam[name] if hasattr(cam, "__getitem__") else getattr(cam, name)
 
-    Record3D gives a 6-DoF transform (quaternion qx,qy,qz,qw + translation tx,ty,tz) in the
-    phone's AR world frame (typically Y-up). We project it onto the ground plane.
 
-    TODO: confirm the axis mapping for YOUR mounting (how the phone sits on the rover).
-          The mapping below assumes the phone is upright with the camera looking forward:
-          x_map = tz (forward), y_map = tx (lateral), theta = yaw about the up (Y) axis.
-          Calibrate this once on the bench by driving a known path and checking the Pose.
-    """
-    # Record3D's CameraPose exposes qx/qy/qz/qw/tx/ty/tz as attributes (verified on device,
-    # record3d 1.4.1). Accessor stays tolerant of a key-based binding just in case.
-    f = lambda k: cam[k] if hasattr(cam, "__getitem__") else getattr(cam, k)
-    qx, qy, qz, qw = f("qx"), f("qy"), f("qz"), f("qw")
-    tx, tz = f("tx"), f("tz")
-    # Yaw about the up (Y) axis. Approximate; verify against your mounting convention.
-    yaw = math.atan2(2.0 * (qw * qy + qz * qx), 1.0 - 2.0 * (qy * qy + qx * qx))
-    return Pose(x=float(tz), y=float(tx), theta=float(yaw), timestamp=timestamp)
+def _quat_to_rot(qx: float, qy: float, qz: float, qw: float) -> np.ndarray:
+    """3x3 rotation matrix from a unit quaternion (normalized defensively)."""
+    n = math.sqrt(qx * qx + qy * qy + qz * qz + qw * qw) or 1.0
+    qx, qy, qz, qw = qx / n, qy / n, qz / n, qw / n
+    return np.array([
+        [1 - 2 * (qy * qy + qz * qz), 2 * (qx * qy - qz * qw), 2 * (qx * qz + qy * qw)],
+        [2 * (qx * qy + qz * qw), 1 - 2 * (qx * qx + qz * qz), 2 * (qy * qz - qx * qw)],
+        [2 * (qx * qz - qy * qw), 2 * (qy * qz + qx * qw), 1 - 2 * (qx * qx + qy * qy)],
+    ], dtype=np.float32)
+
+
+def _extrinsic_from_camera(cam) -> np.ndarray:
+    """Full 4x4 camera->world transform from Record3D's quaternion + translation (ARKit world,
+    Y up). This keeps pitch and roll (a yaw-only pose would collapse them), so the 3D viz can
+    place tilted views correctly instead of ramping vertical surfaces. pose_from_extrinsic()
+    derives the 2D nav pose from this same matrix, so all frames stay consistent."""
+    R = _quat_to_rot(
+        float(_field(cam, "qx")), float(_field(cam, "qy")),
+        float(_field(cam, "qz")), float(_field(cam, "qw")),
+    )
+    M = np.eye(4, dtype=np.float32)
+    M[:3, :3] = R
+    M[0, 3] = float(_field(cam, "tx"))
+    M[1, 3] = float(_field(cam, "ty"))
+    M[2, 3] = float(_field(cam, "tz"))
+    return M
 
 
 class PhoneLink:
@@ -124,9 +139,14 @@ class PhoneLink:
         coeffs = self._stream.get_intrinsic_mat()  # IntrinsicMatrixCoeffs(fx, fy, tx, ty)
         cam = self._stream.get_camera_pose()  # CameraPose(qx/qy/qz/qw, tx/ty/tz)
         ts = time.monotonic()
+        # Build the full 6-DoF transform, then derive the 2D pose from it (via the SAME map
+        # convention as the cloud/mesh) so the rover marker and the 3D geometry stay aligned.
+        extrinsic = _extrinsic_from_camera(cam)
+        px, py, th = pose_from_extrinsic(extrinsic)
         return PhoneFrame(
-            pose=_pose_from_camera(cam, ts),
+            pose=Pose(x=px, y=py, theta=th, timestamp=ts),
             depth=np.asarray(depth, dtype=np.float32),
             intrinsics=_intrinsics_to_mat(coeffs),
+            extrinsic=extrinsic,
             timestamp=ts,
         )

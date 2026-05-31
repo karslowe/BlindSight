@@ -38,7 +38,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "shared"))
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from bridge.phone_link import PhoneLink  # noqa: E402
 from mapping.occupancy_grid import OccupancyGrid  # noqa: E402
-from perception.pointcloud import depth_to_points  # noqa: E402
+from perception.pointcloud import depth_to_points_6dof  # noqa: E402
 
 # Sub-sample + range band for back-projection (fewer points = less bandwidth, smoother viz).
 # Lower stride = denser cloud (looks more like a continuous surface), more bandwidth/compute.
@@ -102,8 +102,8 @@ def main() -> None:
                 print(f"first frame: depth {frame.depth.shape}, "
                       f"range {float(frame.depth.min()):.2f}..{float(frame.depth.max()):.2f} "
                       f"(if that range looks like mm, see CALIBRATION in this file)")
-            pts = depth_to_points(
-                frame.depth, frame.intrinsics, frame.pose,
+            pts = depth_to_points_6dof(
+                frame.depth, frame.intrinsics, frame.extrinsic,
                 stride=STRIDE, min_range_m=MIN_RANGE_M, max_range_m=MAX_RANGE_M,
             )
             _accumulate(cloud, pts)
