@@ -43,10 +43,11 @@ STUCK_DIST_M = 0.06     # net displacement under this over the window (while dri
 REV_V = 0.08            # reverse speed, m/s — GENTLE: the rover is blind behind (no rear sensor)
 REVERSE_S = 0.6         # reverse phase duration (~5 cm); only used as a last resort, see below
 TURN_W = 1.0            # turn rate during recovery, rad/s (+ = CCW/left); brisk + decisive
-# Aggressive-first, escalate-if-it-cannot: first turn is large; each consecutive recovery
-# without real progress adds more, and flips side, until a heading opens up.
-TURN_BASE_RAD = math.radians(90)
-TURN_STEP_RAD = math.radians(40)
+# Medium-first, then refine: start with a moderate turn toward the open side and increase it
+# in small steps on each consecutive recovery (and flip side if it keeps failing), so it homes
+# in on the clear heading instead of overshooting with a big swing.
+TURN_BASE_RAD = math.radians(50)
+TURN_STEP_RAD = math.radians(18)
 TURN_MAX_RAD = math.radians(170)
 RECOVERY_RESET_M = 0.30  # if the rover moved this far since the last recovery, it "worked"
 
@@ -161,7 +162,10 @@ class Navigator:
             # some ground since the last survey. So it drives a direction as far as the path
             # goes, then spins to check for other paths before choosing the next one.
             at_decision = not self.planner.current_path() or self.planner.finished()
-            if not self._surveying and at_decision and self._dist_since_survey >= SURVEY_MIN_GAP_M:
+            # Only survey at an OPEN junction — never spin a 360 while blocked ahead (a wall /
+            # corridor side/end); there, fall through to explore so recovery turns it out.
+            if (not self._surveying and at_decision and not self._blocked_ahead()
+                    and self._dist_since_survey >= SURVEY_MIN_GAP_M):
                 self._begin_survey(pose)
             if self._surveying:
                 return self._run_survey(pose)
@@ -294,11 +298,14 @@ class Navigator:
             rv = TOF_MAX_M if right is None else float(right)
             if abs(lv - rv) > 0.10:           # clear winner -> turn to the more open side
                 return 1.0 if lv > rv else -1.0
-        if self._last_scan:                    # otherwise use the depth scan's two halves
-            lmax = max([r for a, r in self._last_scan if a > 0] or [0.0])
-            rmax = max([r for a, r in self._last_scan if a < 0] or [0.0])
-            if lmax != rmax:
-                return 1.0 if lmax > rmax else -1.0
+        if self._last_scan:                    # otherwise use the depth scan's two halves.
+            # Compare the NEAREST obstacle on each side (not the max — which ties at the 4 m
+            # 'open' sentinel and wrongly defaulted to left). Turn toward the side whose nearest
+            # obstacle is farther away — i.e. away from the wall we're stuck against.
+            lmin = min([r for a, r in self._last_scan if a > 0] or [NO_RETURN_M])
+            rmin = min([r for a, r in self._last_scan if a < 0] or [NO_RETURN_M])
+            if abs(lmin - rmin) > 0.10:
+                return 1.0 if lmin > rmin else -1.0
         return 1.0
 
     def _begin_recovery(self, now: float, pose: Pose) -> DriveCommand:
