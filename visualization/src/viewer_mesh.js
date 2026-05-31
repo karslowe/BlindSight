@@ -42,6 +42,7 @@ scene.add(sun2);
 
 let floor = null;
 let framedOnce = false;
+let meshFramed = false; // camera jumped to the live mesh once
 let gridKey = "";
 
 // The reconstructed scan mesh, rebuilt in place whenever a new mesh arrives.
@@ -76,8 +77,18 @@ function updateScanMesh(mesh) {
   const nVerts = (v.length / 3) | 0;
   if (nVerts < 3 || f.length < 3) {
     scanMesh.visible = false;
-    return 0;
+    return null;
   }
+  // Pass 1: bounds, for height-adaptive color and framing.
+  let xmin = Infinity, xmax = -Infinity, ymin = Infinity, ymax = -Infinity, zmin = Infinity, zmax = -Infinity;
+  for (let i = 0; i < nVerts; i++) {
+    const x = v[3 * i], y = v[3 * i + 1], z = v[3 * i + 2];
+    if (x < xmin) xmin = x; if (x > xmax) xmax = x;
+    if (y < ymin) ymin = y; if (y > ymax) ymax = y;
+    if (z < zmin) zmin = z; if (z > zmax) zmax = z;
+  }
+  const zr = Math.max(0.3, zmax - zmin);
+  // Pass 2: positions + color over the mesh's actual height range.
   const pos = new Float32Array(nVerts * 3);
   const col = new Float32Array(nVerts * 3);
   for (let i = 0; i < nVerts; i++) {
@@ -85,7 +96,7 @@ function updateScanMesh(mesh) {
     pos[3 * i] = mx;
     pos[3 * i + 1] = mz;      // height -> 3D up (y)
     pos[3 * i + 2] = -my;     // world y -> 3D -z
-    const t = Math.max(0, Math.min(1, mz / 1.6)); // color by height (blue low -> red high)
+    const t = Math.max(0, Math.min(1, (mz - zmin) / zr)); // blue low -> red high
     _col.setHSL(0.62 - 0.62 * t, 0.8, 0.55);
     col[3 * i] = _col.r;
     col[3 * i + 1] = _col.g;
@@ -98,7 +109,11 @@ function updateScanMesh(mesh) {
   geo.computeVertexNormals();
   geo.computeBoundingSphere();
   scanMesh.visible = true;
-  return (f.length / 3) | 0;
+  return {
+    nTris: (f.length / 3) | 0,
+    cenX: (xmin + xmax) / 2, cenY: (ymin + ymax) / 2, cenZ: (zmin + zmax) / 2,
+    span: Math.max(xmax - xmin, ymax - ymin, 1.0), zmin,
+  };
 }
 
 function renderMap(update) {
@@ -127,8 +142,23 @@ function renderMap(update) {
   }
 
   let nTris = 0;
-  if (update.mesh) nTris = updateScanMesh(update.mesh);
-  else scanMesh.visible = false;
+  const info = update.mesh ? updateScanMesh(update.mesh) : null;
+  if (info) {
+    nTris = info.nTris;
+    // Frame the camera on the scan once, then leave the controls for the user.
+    if (!meshFramed && nTris > 100) {
+      meshFramed = true;
+      controls.target.set(info.cenX, info.cenZ, -info.cenY);
+      camera.position.set(info.cenX + info.span, info.cenZ + info.span * 1.2, -info.cenY + info.span);
+    }
+    // Slide the reference floor under the scan at its ground level (no occupancy map here).
+    if (floor) {
+      floor.position.set(info.cenX, info.zmin - 0.02, -info.cenY);
+      floor.scale.setScalar((info.span * 1.6 + 1.0) / (width * resolution_m));
+    }
+  } else {
+    scanMesh.visible = false;
+  }
 
   if (update.pose) {
     rover.position.set(update.pose.x, 0.13, -update.pose.y);

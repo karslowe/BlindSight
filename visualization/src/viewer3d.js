@@ -50,6 +50,7 @@ scene.add(sun);
 // ---- persistent objects ----
 let floor = null; // rebuilt only when the grid bounds change
 let framedOnce = false;
+let cloudFramed = false; // camera jumped to the live cloud once
 
 const wallMesh = new THREE.InstancedMesh(
   new THREE.BoxGeometry(1, 1, 1),
@@ -167,14 +168,22 @@ function renderMap(update) {
   let cloudMode = false;
   if (numPts >= 2) {
     cloudMode = true;
+    // Pass 1: bounds, for height-adaptive color and for framing the camera on the scan.
+    let xmin = Infinity, xmax = -Infinity, ymin = Infinity, ymax = -Infinity, zmin = Infinity, zmax = -Infinity;
     for (let i = 0; i < numPts; i++) {
-      const mx = pc[3 * i];
-      const my = pc[3 * i + 1];
-      const mz = pc[3 * i + 2]; // height above floor
+      const x = pc[3 * i], y = pc[3 * i + 1], z = pc[3 * i + 2];
+      if (x < xmin) xmin = x; if (x > xmax) xmax = x;
+      if (y < ymin) ymin = y; if (y > ymax) ymax = y;
+      if (z < zmin) zmin = z; if (z > zmax) zmax = z;
+    }
+    const zr = Math.max(0.3, zmax - zmin); // adaptive height span (avoids all-red saturation)
+    // Pass 2: positions + color normalized over the cloud's actual height range.
+    for (let i = 0; i < numPts; i++) {
+      const mx = pc[3 * i], my = pc[3 * i + 1], mz = pc[3 * i + 2];
       ptPositions[3 * i] = mx;
       ptPositions[3 * i + 1] = mz; // height -> 3D up (y)
       ptPositions[3 * i + 2] = -my; // world y -> 3D -z
-      const t = Math.max(0, Math.min(1, mz / 0.9));
+      const t = Math.max(0, Math.min(1, (mz - zmin) / zr));
       _col.setHSL(0.62 - 0.62 * t, 0.85, 0.55); // blue (low) -> red (high)
       ptColors[3 * i] = _col.r;
       ptColors[3 * i + 1] = _col.g;
@@ -186,6 +195,24 @@ function renderMap(update) {
     ptGeo.computeBoundingSphere();
     points.visible = true;
     wallMesh.visible = false;
+
+    // Frame the camera on the scan once (so walking away from START does not leave it
+    // off-screen), then leave the controls alone so orbit/zoom/pan keep working.
+    const cenX = (xmin + xmax) / 2, cenY = (ymin + ymax) / 2, cenZ = (zmin + zmax) / 2;
+    const span = Math.max(xmax - xmin, ymax - ymin, 1.0);
+    if (!cloudFramed && numPts > 200) {
+      cloudFramed = true;
+      controls.target.set(cenX, cenZ, -cenY);
+      camera.position.set(cenX + span, cenZ + span * 1.2, -cenY + span);
+    }
+    // In a pure walk-around (no occupancy map yet) the START floor is meaningless, so slide
+    // the reference floor under the scan at its ground level. The autonomy view keeps its
+    // grid-aligned floor (it has mapped cells, so this branch is skipped there).
+    const known = cells.filter((v) => v !== -1).length;
+    if (known === 0 && floor) {
+      floor.position.set(cenX, zmin - 0.02, -cenY);
+      floor.scale.setScalar((span * 1.6 + 1.0) / (width * resolution_m));
+    }
   } else {
     // Flavor A fallback: extrude each occupied cell into a wall block.
     let n = 0;
