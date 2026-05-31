@@ -187,6 +187,18 @@ class OccupancyGrid:
         rs, cs = np.where(mask)
         return list(zip(cs.tolist(), rs.tolist()))  # (c, r)
 
+    def unknown_mask(self):
+        """Boolean (height, width) mask: True where a cell is still unobserved (unknown).
+
+        Used by the explorer to score a frontier's information gain (how much unknown space
+        sits behind it). None if nothing is mapped yet.
+        """
+        if self._log is None:
+            return None
+        free = self._log <= _FREE_THRESH
+        occ = self._log >= _OCC_THRESH
+        return ~(free | occ)
+
     def blocked_array(self, inflate_cells: int = 0):
         """Boolean (height, width) mask: True where occupied, dilated by inflate_cells.
 

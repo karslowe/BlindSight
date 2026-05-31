@@ -39,6 +39,7 @@ iPhone ──USB──> HOST: ~/lidar_feed.py            APP LAB CONTAINER: edge
 | Brain: OccupancyGrid mapping | ✅ | 30 folds/5 s on live data → grid grew to 75×102 |
 | Autonomy: explore + return-home | ✅ | closed-loop sim: explore → no frontiers → return → home @0.05 m |
 | Autonomy: obstacle recovery | ⚠️ | reverse→turn→replan FSM added to `navigator.py` (was parking at walls); `applab/navsim.py` written but **NOT YET RUN** — validate on the board before trusting |
+| Autonomy: smart exploration | ⚠️ | `navigation/planning/explorer.py` upgraded nearest-frontier → **information-gain utility** (go where you learn most/meter) + cluster-size weighting, hysteresis (no dithering), unreachable-frontier blacklist. Needs `unknown_mask()` added to `occupancy_grid.py` (done). `applab/explorersim.py` written but **NOT YET RUN**. ⚠️ **edits are in repo-root `navigation/` — re-vendor to the app before they take effect** (see Ops). |
 | Map rendered CLIENT-SIDE | ✅ | brain serves MapUpdate JSON at `/mapupdate`; real `visualization/` viewer renders it (no server raster) |
 | Car Bridge (Python) | ✅ | `Bridge.call("drive",…)`; API confirmed vs Arduino examples |
 | Car Bridge (sketch.ino) | ⚠️ | drive-only, real V4 pins (single dir-pin/motor) + watchdog; **needs compile + bench pass** |
@@ -82,6 +83,12 @@ iPhone ──USB──> HOST: ~/lidar_feed.py            APP LAB CONTAINER: edge
    Modulino Distance over Qwiic/I2C) — currently a `NotImplementedError` stub. Needs hardware.
 
 ## Ops notes
+- **Re-vendor after editing `navigation/`/`shared/`:** the app runs a COPY under
+  `edge/python/`. After pulling navigation changes (e.g. the smart-exploration upgrade), run
+  `cp -r navigation shared visualization <applab>/edge/python/` (per README) and redeploy, or
+  the running app keeps the old code. Validate the new explorer first: `python3
+  applab/explorersim.py` (expects "PASS: explorer chose the high-information-gain frontier").
+  Tune in `explorer.py`: `_INFO_RADIUS`, `_INFO_WEIGHT`, `_HYSTERESIS_BONUS`, `_BLACKLIST_S`.
 - Host feed: `systemctl --user {status,restart} lidar-feed` · logs `journalctl --user -u lidar-feed -f`.
 - **Run once for cold-boot survival:** `sudo loginctl enable-linger arduino` (can't be done
   from a no-password-sudo shell — the single most likely demo-day failure if skipped).
