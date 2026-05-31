@@ -53,7 +53,19 @@ cd ../navigation && python server/autonomy_demo.py
 ```
 
 Three.js loads from a CDN via the import map in `3d.html` (no build step; needs internet).
-A true dense point cloud is a later phase that needs the phone's depth stream.
+
+### Depth-based point cloud (the real 3D)
+
+The 3D view shows a **point cloud** when `MapUpdate.point_cloud` is non-empty (a flat
+`[x,y,z,...]` map-frame list), and falls back to extruded walls otherwise. The demo produces
+a **synthetic** cloud today (`server/autonomy_demo.py`, accumulated as the rover explores).
+When the phone (Record3D) is streaming real depth, swap the synthetic producer for the real
+one - `navigation/perception/pointcloud.py::depth_to_points(depth, intrinsics, pose)` - and
+the same contract and viewer render the real reconstruction unchanged. Navigation never uses
+the point cloud; it is visualization-only.
+
+Note: the demo sends the full cloud each frame for simplicity; in production, throttle it
+(send every N frames or only new points) since point clouds are large.
 
 ## Message schemas
 

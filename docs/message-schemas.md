@@ -137,6 +137,7 @@ robot's current pose, and the planned return path.
 | `return_path` | Waypoint[] | - | Planned return route, ordered start of travel to goal. Empty until a return is requested. |
 | `targets` | Target[] | - | Detected objects of interest (e.g. from YOLO), in the map frame. Empty until something is found. |
 | `start` | object `{x, y}` or null | m | Map-frame position of the mission start (home), for the viewer's START marker. null until set. |
+| `point_cloud` | float[] | m | Optional 3D point cloud for the 3D viz only (navigation never uses it). Flat `[x0,y0,z0, x1,y1,z1, ...]` in the map frame. Empty unless a depth source produces it. |
 
 Where a `Waypoint` is:
 

@@ -62,6 +62,11 @@
       },
       "required": ["x", "y"],
       "additionalProperties": false
+    },
+    "point_cloud": {
+      "type": "array",
+      "description": "Optional 3D point cloud for the 3D viz only (navigation never uses it). Flat list of map-frame coords [x0,y0,z0, x1,y1,z1, ...]. Empty unless a depth source produces it.",
+      "items": { "type": "number" }
     }
   },
   "required": ["width", "height", "resolution_m", "origin", "cells", "pose", "return_path"],

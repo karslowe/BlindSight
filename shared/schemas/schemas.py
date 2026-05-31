@@ -279,6 +279,9 @@ class MapUpdate:
     return_path: List[Waypoint] = field(default_factory=list)
     targets: List[Target] = field(default_factory=list)
     start: Optional[dict] = None  # {"x", "y"} of the mission start (home); None if not set
+    # Optional 3D point cloud (for the 3D viz only; navigation never uses it). Flat list of
+    # map-frame coords [x0,y0,z0, x1,y1,z1, ...]. Empty unless a depth source is producing it.
+    point_cloud: List[float] = field(default_factory=list)
 
     def to_dict(self) -> dict:
         return {
@@ -292,6 +295,7 @@ class MapUpdate:
             "return_path": [w.to_dict() for w in self.return_path],
             "targets": [t.to_dict() for t in self.targets],
             "start": None if self.start is None else {"x": self.start["x"], "y": self.start["y"]},
+            "point_cloud": list(self.point_cloud),
         }
 
     @classmethod
@@ -307,4 +311,5 @@ class MapUpdate:
             return_path=[Waypoint.from_dict(w) for w in d.get("return_path", [])],
             targets=[Target.from_dict(t) for t in d.get("targets", [])],
             start=None if not start else {"x": float(start["x"]), "y": float(start["y"])},
+            point_cloud=list(d.get("point_cloud", [])),
         )

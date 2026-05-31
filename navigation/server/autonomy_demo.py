@@ -27,7 +27,7 @@ from schemas.schemas import DriveCommand, Pose, Target  # noqa: E402
 from mapping.occupancy_grid import OccupancyGrid  # noqa: E402
 from planning.explorer import FrontierExplorer  # noqa: E402
 from planning.return_planner import ReturnPlanner  # noqa: E402
-from server.grid_demo import ROOM_HALF, MAX_RANGE, OBSTACLE, synthetic_scan, _ray_box  # noqa: E402
+from server.grid_demo import ROOM_HALF, MAX_RANGE, OBSTACLE, synthetic_scan, _ray_box, _ray_room  # noqa: E402
 
 DT = 0.05
 
@@ -95,6 +95,53 @@ def _detect_target(x: float, y: float, theta: float):
     return TARGET
 
 
+# Synthetic 3D point cloud (a stand-in for the phone's depth). Accumulated as the rover
+# explores; the viewer renders MapUpdate.point_cloud as a THREE.Points cloud. When the phone
+# streams real depth, replace this with perception.pointcloud.depth_to_points(depth,
+# intrinsics, pose) - the contract and the viewer do not change.
+CLOUD_AZIMUTHS = [round(-0.7 + i * 0.0583, 3) for i in range(25)]  # ~ +/-40 deg fan
+CLOUD_WALL_H = 0.8  # room walls modeled this tall
+CLOUD_OBS_H = 0.45  # interior obstacle modeled this tall
+CLOUD_VOXEL = 0.05  # dedup resolution (m)
+CLOUD_MAX_POINTS = 7000
+
+
+def _accumulate_cloud(cloud: dict, x: float, y: float, theta: float) -> None:
+    """Ray-cast the virtual room from (x,y,theta) and add the visible wall/obstacle surface
+    points (vertical stripes) to the accumulated cloud - mimics phone depth accumulation."""
+    if len(cloud) >= CLOUD_MAX_POINTS:
+        return
+    for az in CLOUD_AZIMUTHS:
+        a = theta + az
+        d_room = _ray_room(x, y, a)
+        d_obs = _ray_box(x, y, a, *OBSTACLE)
+        if d_obs is not None and d_obs < d_room:
+            d, top = d_obs, CLOUD_OBS_H
+        else:
+            d, top = d_room, CLOUD_WALL_H
+        if d is None or d > MAX_RANGE:
+            continue
+        hx = x + d * math.cos(a)
+        hy = y + d * math.sin(a)
+        z = 0.05
+        while z <= top + 1e-6:
+            key = (round(hx / CLOUD_VOXEL), round(hy / CLOUD_VOXEL), round(z / CLOUD_VOXEL))
+            if key not in cloud:
+                if len(cloud) >= CLOUD_MAX_POINTS:
+                    return
+                cloud[key] = (hx, hy, round(z, 3))
+            z += 0.1
+
+
+def _cloud_points(cloud: dict) -> list:
+    out = []
+    for px, py, pz in cloud.values():
+        out.append(px)
+        out.append(py)
+        out.append(pz)
+    return out
+
+
 def step(state, grid, explorer, planner):
     """Advance the autonomy one tick. Returns the updated (x, y, theta, mode, ticks)."""
     x, y, theta, mode, ticks = state
@@ -105,6 +152,7 @@ def step(state, grid, explorer, planner):
     if state.start is None:
         state.start = Pose(x=x, y=y, theta=theta, timestamp=0.0)
     state.driven.append(Pose(x=x, y=y, theta=theta, timestamp=0.0))
+    _accumulate_cloud(state.cloud, x, y, theta)  # synthetic depth -> 3D point cloud
 
     # Simulated YOLO: the first time the rover sees the target, MARK it on the map. It
     # keeps exploring the rest of the space and only returns home when exploration is done
@@ -188,6 +236,7 @@ class _State:
         self.recovery = 0  # ticks remaining in a back-up-and-turn recovery
         self.return_requested = False  # set by the "Return to start" button
         self.target_found = None  # a Target once the simulated YOLO detects it
+        self.cloud = {}  # accumulated synthetic 3D point cloud (voxel key -> (x,y,z))
 
     def __iter__(self):
         return iter((self.x, self.y, self.theta, self.mode, self.ticks))
@@ -219,11 +268,13 @@ def main() -> None:
             route = planner.current_path() if state.mode == "return" else []
             targets = [state.target_found] if state.target_found is not None else []
             home = {"x": state.start.x, "y": state.start.y} if state.start is not None else None
+            cloud = _cloud_points(state.cloud)  # synthetic 3D point cloud (for the 3D viz)
             server.publish(grid.to_map_update(
                 Pose(x=state.x, y=state.y, theta=state.theta, timestamp=time.time()),
                 route,
                 targets,
                 home,
+                cloud,
             ))
             time.sleep(DT)
     except KeyboardInterrupt:

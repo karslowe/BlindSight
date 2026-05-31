@@ -59,6 +59,20 @@ const wallMesh = new THREE.InstancedMesh(
 wallMesh.count = 0;
 scene.add(wallMesh);
 
+// Point cloud (Flavor B): the real depth-derived 3D points. Fixed-capacity buffers updated
+// in place each frame; colored by height. Shown when MapUpdate.point_cloud is non-empty,
+// in which case the extruded walls are hidden.
+const POINT_CAP = 14000;
+const ptPositions = new Float32Array(POINT_CAP * 3);
+const ptColors = new Float32Array(POINT_CAP * 3);
+const ptGeo = new THREE.BufferGeometry();
+ptGeo.setAttribute("position", new THREE.BufferAttribute(ptPositions, 3));
+ptGeo.setAttribute("color", new THREE.BufferAttribute(ptColors, 3));
+const points = new THREE.Points(ptGeo, new THREE.PointsMaterial({ size: 0.03, vertexColors: true }));
+points.visible = false;
+scene.add(points);
+const _col = new THREE.Color();
+
 // Rover: a cone re-oriented to point along +X, then rotated about Y by the heading.
 const roverGeo = new THREE.ConeGeometry(0.08, 0.24, 18);
 roverGeo.rotateZ(-Math.PI / 2); // tip now points +X
@@ -147,24 +161,53 @@ function renderMap(update) {
     }
   }
 
-  // Walls: one box instance per occupied cell.
-  let n = 0;
-  for (let r = 0; r < height && n < MAX_WALLS; r++) {
-    for (let c = 0; c < width && n < MAX_WALLS; c++) {
-      if (cells[r * width + c] === 100) {
-        const wx = origin.x + (c + 0.5) * resolution_m;
-        const wy = origin.y + (r + 0.5) * resolution_m;
-        _p.set(wx, WALL_HEIGHT / 2, -wy);
-        _q.identity();
-        _s.set(resolution_m, WALL_HEIGHT, resolution_m);
-        _m.compose(_p, _q, _s);
-        wallMesh.setMatrixAt(n, _m);
-        n++;
+  // 3D structure: the real point cloud (Flavor B) if present, else extruded walls (Flavor A).
+  const pc = update.point_cloud || [];
+  const numPts = Math.min((pc.length / 3) | 0, POINT_CAP);
+  let cloudMode = false;
+  if (numPts >= 2) {
+    cloudMode = true;
+    for (let i = 0; i < numPts; i++) {
+      const mx = pc[3 * i];
+      const my = pc[3 * i + 1];
+      const mz = pc[3 * i + 2]; // height above floor
+      ptPositions[3 * i] = mx;
+      ptPositions[3 * i + 1] = mz; // height -> 3D up (y)
+      ptPositions[3 * i + 2] = -my; // world y -> 3D -z
+      const t = Math.max(0, Math.min(1, mz / 0.9));
+      _col.setHSL(0.62 - 0.62 * t, 0.85, 0.55); // blue (low) -> red (high)
+      ptColors[3 * i] = _col.r;
+      ptColors[3 * i + 1] = _col.g;
+      ptColors[3 * i + 2] = _col.b;
+    }
+    ptGeo.setDrawRange(0, numPts);
+    ptGeo.attributes.position.needsUpdate = true;
+    ptGeo.attributes.color.needsUpdate = true;
+    ptGeo.computeBoundingSphere();
+    points.visible = true;
+    wallMesh.visible = false;
+  } else {
+    // Flavor A fallback: extrude each occupied cell into a wall block.
+    let n = 0;
+    for (let r = 0; r < height && n < MAX_WALLS; r++) {
+      for (let c = 0; c < width && n < MAX_WALLS; c++) {
+        if (cells[r * width + c] === 100) {
+          const wx = origin.x + (c + 0.5) * resolution_m;
+          const wy = origin.y + (r + 0.5) * resolution_m;
+          _p.set(wx, WALL_HEIGHT / 2, -wy);
+          _q.identity();
+          _s.set(resolution_m, WALL_HEIGHT, resolution_m);
+          _m.compose(_p, _q, _s);
+          wallMesh.setMatrixAt(n, _m);
+          n++;
+        }
       }
     }
+    wallMesh.count = n;
+    wallMesh.instanceMatrix.needsUpdate = true;
+    wallMesh.visible = true;
+    points.visible = false;
   }
-  wallMesh.count = n;
-  wallMesh.instanceMatrix.needsUpdate = true;
 
   // Rover.
   if (update.pose) {
@@ -214,7 +257,8 @@ function renderMap(update) {
   const returning = rp.length > 0;
   const found = (update.targets || []).length > 0;
   hud.textContent =
-    `3D - mapped ${pct}% - ${returning ? "RETURNING to start" : "exploring"}` +
+    `3D (${cloudMode ? "point cloud" : "extruded"}) - mapped ${pct}% - ` +
+    `${returning ? "RETURNING to start" : "exploring"}` +
     (found ? ` - TARGET FOUND` : "");
 }
 
