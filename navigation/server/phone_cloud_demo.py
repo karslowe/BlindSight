@@ -51,6 +51,10 @@ MIN_CONFIDENCE = 2
 # Accumulation: dedup points onto a voxel grid so revisiting a spot does not pile up points.
 VOXEL_M = 0.03  # finer dedup -> denser surfaces (was 0.04)
 MAX_POINTS = 50000  # cap the accumulated cloud; matches the viewer's POINT_CAP
+# Phone LiDAR height above the floor on the rover (meters). With the phone MOUNTED at a known
+# height we re-zero cloud heights to the real floor (ARKit's own zero is the start height, not
+# the ground). Set 0 to disable (handheld / unknown mount -> the viewer estimates the floor).
+MOUNT_HEIGHT_M = 0.22
 # Accumulate every frame at the phone's full rate, but PUBLISH (serialize the whole cloud to
 # JSON + push over the websocket) only this often. Sending the growing cloud every frame was
 # the loop bottleneck; this keeps capture fast and the browser refresh smooth.
@@ -133,6 +137,13 @@ def main() -> None:
                     stride=STRIDE, min_range_m=MIN_RANGE_M, max_range_m=MAX_RANGE_M,
                     confidence=frame.confidence, min_confidence=MIN_CONFIDENCE,  # drop phantom dots
                 )
+                # Re-zero heights to the real floor using the known mount height, so the floor
+                # lands at z=0 (camera at MOUNT_HEIGHT_M, walls reading true heights). floor_z is
+                # the floor's height in the map frame = camera height - mount height.
+                if pts and MOUNT_HEIGHT_M:
+                    floor_z = float(frame.extrinsic[1, 3]) - MOUNT_HEIGHT_M
+                    for i in range(2, len(pts), 3):
+                        pts[i] -= floor_z
                 _accumulate(cloud, pts, cols)  # every frame, at the phone's full rate
                 frames += 1
                 now = time.monotonic()
