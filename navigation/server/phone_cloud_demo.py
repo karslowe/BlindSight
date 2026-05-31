@@ -105,48 +105,56 @@ def main() -> None:
     frames = 0
     last_publish = 0.0
     epoch = link.epoch
+    import traceback
     try:
         while True:
-            frame = link.read()
-            if frame is None:
-                time.sleep(0.005)  # no new phone frame yet; do not busy-spin
-                continue
-            # A reconnect = a new ARKit world origin. Drop the old cloud so we don't overlay
-            # two misaligned coordinate frames (the "two wings" smear).
-            if link.epoch != epoch:
-                epoch = link.epoch
-                cloud.clear()
-                start = None
-                print("[demo] phone reconnected -> new tracking origin; cloud reset")
-            if start is None:
-                start = frame.pose
-                grid._init_grid(start)  # seed floor bounds so the viewer has a ground plane
-                print(f"first frame: depth {frame.depth.shape}, "
-                      f"range {float(frame.depth.min()):.2f}..{float(frame.depth.max()):.2f} "
-                      f"(if that range looks like mm, see CALIBRATION in this file)")
-            pts, cols = depth_to_points_rgb_6dof(
-                frame.depth, frame.intrinsics, frame.extrinsic, frame.rgb,
-                stride=STRIDE, min_range_m=MIN_RANGE_M, max_range_m=MAX_RANGE_M,
-                confidence=frame.confidence, min_confidence=MIN_CONFIDENCE,  # drop phantom dots
-            )
-            _accumulate(cloud, pts, cols)  # every frame, at the phone's full rate
-            frames += 1
-            now = time.monotonic()
-            if now - last_publish >= PUBLISH_INTERVAL_S:
-                last_publish = now
-                home = {"x": start.x, "y": start.y}
-                pflat, rgbflat = _flat(cloud)
-                # 2D map stays empty here (3D cloud only); pose + cloud carry it.
-                server.publish(grid.to_map_update(
-                    frame.pose, [], [], home, pflat, point_cloud_rgb=rgbflat))
-            if frames % 30 == 0 and cloud:
-                xs = [p[0] for p in cloud.values()]
-                ys = [p[1] for p in cloud.values()]
-                zs = [p[2] for p in cloud.values()]
-                print(f"  {frames} fr, {len(cloud)} pts | rover xy ({frame.pose.x:+.2f},{frame.pose.y:+.2f}) "
-                      f"cam_height {float(frame.extrinsic[1, 3]):+.2f} | "
-                      f"cloud x[{min(xs):+.2f},{max(xs):+.2f}] y[{min(ys):+.2f},{max(ys):+.2f}] "
-                      f"z[{min(zs):+.2f},{max(zs):+.2f}]")
+            # One bad frame must NOT take the whole server down (that's what froze the viewer
+            # on "connecting..."). Catch per-frame errors, log them, and keep serving.
+            try:
+                frame = link.read()
+                if frame is None:
+                    time.sleep(0.005)  # no new phone frame yet; do not busy-spin
+                    continue
+                # A reconnect = a new ARKit world origin. Drop the old cloud so we don't overlay
+                # two misaligned coordinate frames (the "two wings" smear).
+                if link.epoch != epoch:
+                    epoch = link.epoch
+                    cloud.clear()
+                    start = None
+                    print("[demo] phone reconnected -> new tracking origin; cloud reset")
+                if start is None:
+                    start = frame.pose
+                    grid._init_grid(start)  # seed floor bounds so the viewer has a ground plane
+                    print(f"first frame: depth {frame.depth.shape}, "
+                          f"range {float(frame.depth.min()):.2f}..{float(frame.depth.max()):.2f} "
+                          f"(if that range looks like mm, see CALIBRATION in this file)")
+                pts, cols = depth_to_points_rgb_6dof(
+                    frame.depth, frame.intrinsics, frame.extrinsic, frame.rgb,
+                    stride=STRIDE, min_range_m=MIN_RANGE_M, max_range_m=MAX_RANGE_M,
+                    confidence=frame.confidence, min_confidence=MIN_CONFIDENCE,  # drop phantom dots
+                )
+                _accumulate(cloud, pts, cols)  # every frame, at the phone's full rate
+                frames += 1
+                now = time.monotonic()
+                if now - last_publish >= PUBLISH_INTERVAL_S:
+                    last_publish = now
+                    home = {"x": start.x, "y": start.y}
+                    pflat, rgbflat = _flat(cloud)
+                    # 2D map stays empty here (3D cloud only); pose + cloud carry it.
+                    server.publish(grid.to_map_update(
+                        frame.pose, [], [], home, pflat, point_cloud_rgb=rgbflat))
+                if frames % 30 == 0 and cloud:
+                    xs = [p[0] for p in cloud.values()]
+                    ys = [p[1] for p in cloud.values()]
+                    zs = [p[2] for p in cloud.values()]
+                    print(f"  {frames} fr, {len(cloud)} pts | rover xy ({frame.pose.x:+.2f},{frame.pose.y:+.2f}) "
+                          f"cam_height {float(frame.extrinsic[1, 3]):+.2f} | "
+                          f"cloud x[{min(xs):+.2f},{max(xs):+.2f}] y[{min(ys):+.2f},{max(ys):+.2f}] "
+                          f"z[{min(zs):+.2f},{max(zs):+.2f}]")
+            except Exception:
+                print("[demo] frame error (server stays up, continuing):")
+                traceback.print_exc()
+                time.sleep(0.1)
     except KeyboardInterrupt:
         print(f"\nstopped ({frames} frames, {len(cloud)} points)")
 
