@@ -1,0 +1,52 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Recon Rover - 3D Map</title>
+  <style>
+    :root { --panel: rgba(20, 24, 31, 0.82); --border: rgba(255, 255, 255, 0.12); }
+    * { box-sizing: border-box; }
+    html, body { margin: 0; height: 100%; background: #11151c; color: #ecf0f1;
+                 font-family: system-ui, -apple-system, sans-serif; overflow: hidden; }
+    #c3d { display: block; width: 100vw; height: 100vh; }
+    .panel { position: fixed; background: var(--panel); border: 1px solid var(--border);
+             border-radius: 10px; backdrop-filter: blur(6px); -webkit-backdrop-filter: blur(6px); }
+    #hud { top: 12px; left: 12px; padding: 8px 12px; font-size: 13px; font-variant-numeric: tabular-nums; }
+    #status { top: 12px; right: 12px; padding: 8px 12px; font-size: 13px; font-weight: 600;
+              display: flex; align-items: center; gap: 8px; }
+    #status .dot { width: 10px; height: 10px; border-radius: 50%; background: #95a5a6; }
+    #status.live .dot { background: #2ecc71; box-shadow: 0 0 8px #2ecc71; }
+    #status.sim  .dot { background: #f39c12; box-shadow: 0 0 8px #f39c12; }
+    #status.down .dot { background: #e74c3c; box-shadow: 0 0 8px #e74c3c; }
+    #return { position: fixed; bottom: 16px; left: 50%; transform: translateX(-50%);
+              min-height: 48px; padding: 0 26px; font-size: 15px; font-weight: 700; border: 0;
+              border-radius: 12px; background: #2d6cdf; color: white; cursor: pointer; }
+    #hint { position: fixed; bottom: 18px; left: 12px; font-size: 12px; opacity: 0.55; }
+    a.twod { position: fixed; bottom: 18px; right: 12px; color: #9bb4e8; font-size: 12px; text-decoration: none; }
+  </style>
+
+  <!-- Three.js + addons from CDN (no build step). -->
+  <script type="importmap">
+    {
+      "imports": {
+        "three": "https://unpkg.com/three@0.169.0/build/three.module.js",
+        "three/addons/": "https://unpkg.com/three@0.169.0/examples/jsm/"
+      }
+    }
+  </script>
+</head>
+<body>
+  <canvas id="c3d"></canvas>
+  <div id="hud" class="panel">3D view - waiting for map...</div>
+  <div id="status" class="panel"><span class="dot"></span><span class="label">connecting...</span></div>
+  <button id="return">Return to start</button>
+  <div id="hint">drag to orbit &middot; scroll to zoom &middot; right-drag to pan</div>
+  <a class="twod" href="/?live">2D view &rarr;</a>
+
+  <!-- viewer3d defines the render hook (window.__onMapUpdate); ws_client (REUSED unchanged)
+       connects to the same /ws stream and feeds it. Best viewed with the real server: /3d.html?live -->
+  <script type="module" src="src/viewer3d.js?v=1"></script>
+  <script type="module" src="src/ws_client.js?v=5"></script>
+</body>
+</html>

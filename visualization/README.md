@@ -39,6 +39,22 @@ Two options:
 - [src/viewer.js](src/viewer.js): renders the occupancy grid, pose, and path.
 - [src/ws_client.js](src/ws_client.js): connects to the rover websocket and feeds updates.
 
+## 3D view (optional, additive)
+
+A 3D version lives at `/3d.html` ([3d.html](3d.html) + [src/viewer3d.js](src/viewer3d.js))
+and renders the **same `MapUpdate` stream** with Three.js: a floor, occupied cells extruded
+into walls, plus the rover, START, targets, and route home. It reuses `ws_client.js`
+unchanged and touches no backend or contract, so the 2D view at `/` is unaffected.
+
+```bash
+cd ../navigation && python server/autonomy_demo.py
+# 2D:  http://localhost:8000/?live
+# 3D:  http://localhost:8000/3d.html?live   (drag to orbit, scroll to zoom, right-drag to pan)
+```
+
+Three.js loads from a CDN via the import map in `3d.html` (no build step; needs internet).
+A true dense point cloud is a later phase that needs the phone's depth stream.
+
 ## Message schemas
 
 Defined in [../docs/message-schemas.md](../docs/message-schemas.md). Field names match the
