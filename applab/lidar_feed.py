@@ -18,6 +18,7 @@ SETUP (host shell, one time):
     python3 -m venv ~/r3d-venv
     CXXFLAGS="-include cstdint -include string" ~/r3d-venv/bin/pip install numpy record3d
     # ^ the CXXFLAGS force-includes dodge a record3d-vs-GCC-14 'incomplete type std::string' error
+    ~/r3d-venv/bin/pip install ultralytics   # OPTIONAL: enables YOLO target detection (bottle)
 
 RUN:
     sudo systemctl start usbmuxd              # it's 'static'; start if not running
@@ -52,12 +53,30 @@ SCAN_RAYS = 90      # columns sampled from the depth band into the horizontal sc
 SCAN_BAND = 0.10    # fraction of image height (around vertical center) used as the scan band.
 FRAME_TIMEOUT_S = 3.0  # no new frame for this long => stream is dead; disconnect + reconnect.
 
+# ---- target detection (YOLO) — OPTIONAL, runs only if ultralytics is installed ----------
+# Detect a target object in the RGB frame, locate it on the map using the SAME pose+scan
+# geometry the occupancy grid uses, and expose confirmed targets at /data for the brain.
+# Lazy + DECOUPLED: inference runs in its own thread at DETECT_PERIOD_S (never in the capture
+# callback, so it can't slow the 60 fps feed), and if ultralytics is not installed the feed
+# runs exactly as before (targets stays []). Install on the host venv: ~/r3d-venv/bin/pip
+# install ultralytics. Tune via env: BLINDSIGHT_DETECT=0 to disable, BLINDSIGHT_TARGET=chair.
+DETECT_ENABLED = os.environ.get("BLINDSIGHT_DETECT", "1") != "0"
+DETECT_LABEL = os.environ.get("BLINDSIGHT_TARGET", "bottle")
+DETECT_MODEL = os.environ.get("BLINDSIGHT_YOLO", "yolo26n.pt")  # auto-falls back to yolo11n
+DETECT_MIN_CONF = 0.5
+DETECT_PERIOD_S = 0.3   # ~3 Hz; inference is the cost and mapping doesn't need more
+DETECT_MERGE_M = 0.5    # detections within this distance are treated as the same object
+DETECT_MIN_HITS = 3     # confirm a target only after this many hits (rejects false positives)
+
 _lock = threading.Lock()
 # latest_depth holds ONLY the newest frame (overwritten each callback). frame_id bumps so the
 # HTTP side can cache an encoded PNG and skip re-encoding while no new frame has arrived.
 # pose/scan are the brain-facing data (the App Lab container pulls them from /data).
 _state = {"capture": "starting", "frames": 0, "latest_depth": None, "frame_id": 0,
-          "depth_shape": None, "pose": None, "scan": None}
+          "depth_shape": None, "pose": None, "scan": None,
+          # target detection (latest RGB/intrinsics/confidence for the detect thread; targets out)
+          "latest_rgb": None, "latest_intr": None, "latest_conf": None,
+          "targets": [], "detect": "idle"}
 _png_cache = {"id": -1, "png": None}
 _png_cache_lock = threading.Lock()
 
@@ -248,6 +267,110 @@ def _depth_to_scan(depth, intr, conf=None, pitch_auto_deg=0.0) -> list:
     return scan
 
 
+# --------------------------------------------------------- target detection (YOLO) ----
+# A bbox center is located on the map with the SAME geometry _depth_to_scan uses to place
+# obstacles (horizontal angle from the column, range from the depth), so a detected target
+# lands consistently with the occupancy map. _track fuses per-frame hits into stable targets.
+_track: list = []  # clusters {label, x, y, w (conf weight), conf (max), hits}; detect-thread only
+
+
+def _project_detection(u, v, rgb_shape, depth, intr, pose) -> "tuple | None":
+    """Box center (u, v) in RGB pixels -> map (x, y), or None if no valid depth under it."""
+    d = np.asarray(depth, dtype=np.float32)
+    h, w = d.shape
+    hc, wc = rgb_shape[0], rgb_shape[1]
+    ud = u * (w / float(wc))   # RGB pixel -> depth pixel (shared FOV, different resolution)
+    vd = v * (h / float(hc))
+    fx = float(intr[0, 0]) if intr is not None else float(w)
+    cx = float(intr[0, 2]) if intr is not None else (w / 2.0)
+    if intr is not None and abs(cx - w / 2.0) > w * 0.25:   # scale intrinsics to depth res
+        sx = w / (2.0 * cx); fx *= sx; cx *= sx
+    ui, vi = int(round(ud)), int(round(vd))
+    u0, u1 = max(0, ui - 4), min(w, ui + 5)
+    v0, v1 = max(0, vi - 4), min(h, vi + 5)
+    patch = d[v0:v1, u0:u1]
+    valid = np.isfinite(patch) & (patch > 0.1) & (patch < DEPTH_MAX_M)
+    if not valid.any():
+        return None
+    z = float(np.median(patch[valid]))                       # robust depth at the box center
+    with _calib_lock:
+        scan_sign = _calib.get("scan_sign", 1)
+    ang = scan_sign * math.atan2(cx - ud, fx)                # horizontal bearing (same as scan)
+    rng = z / max(math.cos(ang), 1e-3)
+    bearing = pose["theta"] + ang
+    return pose["x"] + rng * math.cos(bearing), pose["y"] + rng * math.sin(bearing)
+
+
+def _track_update(dets) -> list:
+    """Fuse this frame's (x, y, label, conf) detections into clusters; return CONFIRMED targets
+    (seen >= DETECT_MIN_HITS) as MapUpdate-ready dicts. Drops one-frame false positives."""
+    for x, y, label, conf in dets:
+        best, bestd = None, DETECT_MERGE_M
+        for c in _track:
+            if c["label"] == label and math.hypot(c["x"] - x, c["y"] - y) <= bestd:
+                best, bestd = c, math.hypot(c["x"] - x, c["y"] - y)
+        if best is None:
+            _track.append({"label": label, "x": x, "y": y, "w": conf, "conf": conf, "hits": 1})
+        else:
+            wt = best["w"] + conf
+            best["x"] = (best["x"] * best["w"] + x * conf) / wt
+            best["y"] = (best["y"] * best["w"] + y * conf) / wt
+            best["w"], best["conf"], best["hits"] = wt, max(best["conf"], conf), best["hits"] + 1
+    return [{"x": round(c["x"], 3), "y": round(c["y"], 3), "label": c["label"],
+             "confidence": round(c["conf"], 3)} for c in _track if c["hits"] >= DETECT_MIN_HITS]
+
+
+def _detect_loop() -> None:
+    """Throttled YOLO on the newest RGB frame -> confirmed map-frame targets in _state. Lazy:
+    if ultralytics isn't installed the feed runs unchanged (targets stays [])."""
+    if not DETECT_ENABLED:
+        return
+    try:
+        from ultralytics import YOLO
+    except Exception as e:  # noqa: BLE001
+        print(f"[lidar] target detection OFF (ultralytics not installed: {e})", flush=True)
+        with _lock:
+            _state["detect"] = "off (no ultralytics)"
+        return
+    try:
+        model, name = YOLO(DETECT_MODEL), DETECT_MODEL
+    except Exception as e:  # noqa: BLE001 - YOLO26 may be too new for this ultralytics
+        print(f"[lidar] {DETECT_MODEL} unavailable ({e}); falling back to yolo11n.pt", flush=True)
+        model, name = YOLO("yolo11n.pt"), "yolo11n.pt"
+    print(f"[lidar] target detection ON: model={name}, target='{DETECT_LABEL}'", flush=True)
+    with _lock:
+        _state["detect"] = f"on ({name}, '{DETECT_LABEL}')"
+    while True:
+        time.sleep(DETECT_PERIOD_S)
+        with _lock:
+            rgb, depth = _state["latest_rgb"], _state["latest_depth"]
+            intr, pose = _state["latest_intr"], _state["pose"]
+        if rgb is None or depth is None or pose is None:
+            continue
+        try:
+            results = model(rgb, verbose=False)
+        except Exception as e:  # noqa: BLE001
+            with _lock:
+                _state["detect"] = f"infer error: {e}"
+            continue
+        dets = []
+        for r in results:
+            for box in getattr(r, "boxes", []):
+                label = model.names[int(box.cls)]
+                if label != DETECT_LABEL or float(box.conf) < DETECT_MIN_CONF:
+                    continue
+                x1, y1, x2, y2 = box.xyxy[0].tolist()
+                world = _project_detection((x1 + x2) / 2.0, (y1 + y2) / 2.0,
+                                           rgb.shape, depth, intr, pose)
+                if world is not None:
+                    dets.append((world[0], world[1], label, float(box.conf)))
+        confirmed = _track_update(dets)
+        with _lock:
+            _state["targets"] = confirmed
+            if confirmed:
+                _state["detect"] = f"FOUND {len(confirmed)} '{DETECT_LABEL}'"
+
+
 # ---------------------------------------------------------------- record3d capture ----
 def _capture_loop() -> None:
     while True:
@@ -284,6 +407,12 @@ def _capture_loop() -> None:
                 except Exception:  # noqa: BLE001
                     conf = None
                 try:
+                    rgb = np.asarray(stream.get_rgb_frame())  # for YOLO target detection
+                    if rgb.ndim == 3 and rgb.shape[2] > 3:
+                        rgb = rgb[..., :3]               # drop alpha if present
+                except Exception:  # noqa: BLE001
+                    rgb = None
+                try:
                     cam = stream.get_camera_pose()
                     pose = _pose_from_camera(cam, time.time())
                     scan = _depth_to_scan(d, intr, conf, _pitch_from_cam(cam))
@@ -298,6 +427,12 @@ def _capture_loop() -> None:
                         _state["pose"] = pose
                     if scan is not None:
                         _state["scan"] = scan
+                    if intr is not None:
+                        _state["latest_intr"] = intr
+                    if conf is not None:
+                        _state["latest_conf"] = conf
+                    if rgb is not None:
+                        _state["latest_rgb"] = np.array(rgb, copy=True)
                     _state["capture"] = "STREAMING — LiDAR depth live"
                 last_frame[0] = time.time()
             except Exception as e:  # noqa: BLE001
@@ -371,14 +506,16 @@ class _Handler(BaseHTTPRequestHandler):
         elif path == "/status":
             import json
             with _lock:
-                s = {k: _state[k] for k in ("capture", "frames", "depth_shape")}
+                s = {k: _state[k] for k in ("capture", "frames", "depth_shape", "detect")}
+                s["targets"] = len(_state["targets"])
             self._send(200, "application/json", json.dumps(s).encode())
         elif path == "/data":
             # Brain-facing data: 2D pose + horizontal scan. The App Lab container pulls this.
             import json
             with _lock:
                 s = {"frames": _state["frames"], "frame_id": _state["frame_id"],
-                     "pose": _state["pose"], "scan": _state["scan"]}
+                     "pose": _state["pose"], "scan": _state["scan"],
+                     "targets": _state["targets"]}
             self._send(200, "application/json", json.dumps(s).encode())
         elif path == "/calib":
             with _calib_lock:
@@ -446,6 +583,7 @@ def _bind_addrs() -> "list[str]":
 def main() -> None:
     _load_calib()
     threading.Thread(target=_capture_loop, name="lidar-capture", daemon=True).start()
+    threading.Thread(target=_detect_loop, name="lidar-detect", daemon=True).start()
     addrs = _bind_addrs()
     # Serve on every chosen address (one ThreadingHTTPServer per bind) so the container
     # reaches us via its bridge gateway regardless of which docker bridge App Lab uses.
