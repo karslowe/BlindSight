@@ -72,7 +72,8 @@ class SlamFrontend:
         if self._last is None:
             return []
         return depth_to_scan(
-            self._last.depth, self._last.intrinsics, self._last.extrinsic, self._last.pose
+            self._last.depth, self._last.intrinsics, self._last.extrinsic, self._last.pose,
+            confidence=self._last.confidence,  # reject phantom dots (darkness / open space)
         )
 
     def is_keyframe(self) -> bool:

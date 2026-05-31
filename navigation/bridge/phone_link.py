@@ -49,6 +49,7 @@ class PhoneFrame:
     extrinsic: np.ndarray  # 4x4 camera->world (ARKit world, Y up); full 6-DoF for the 3D viz
     timestamp: float
     rgb: Optional[np.ndarray] = None  # HcxWcx3 uint8 camera image (higher res than depth)
+    confidence: Optional[np.ndarray] = None  # HxW ARKit confidence 0/1/2 (low/med/high) per depth px
 
 
 def _intrinsics_to_mat(coeffs) -> np.ndarray:
@@ -142,6 +143,12 @@ class PhoneLink:
         rgb = np.asarray(self._stream.get_rgb_frame())  # HcxWcx3 uint8 (higher res than depth)
         if rgb.ndim == 3 and rgb.shape[2] > 3:
             rgb = rgb[..., :3]  # drop alpha if present
+        # ARKit confidence per depth pixel (0=low/1=med/2=high). Low = no real LiDAR return
+        # (darkness / open space / absorptive surfaces) - the source of phantom obstacle dots.
+        try:
+            conf = np.asarray(self._stream.get_confidence_frame())
+        except Exception:
+            conf = None
         ts = time.monotonic()
         # Build the full 6-DoF transform, then derive the 2D pose from it (via the SAME map
         # convention as the cloud/mesh) so the rover marker and the 3D geometry stay aligned.
@@ -154,4 +161,5 @@ class PhoneLink:
             extrinsic=extrinsic,
             timestamp=ts,
             rgb=rgb,
+            confidence=conf,
         )

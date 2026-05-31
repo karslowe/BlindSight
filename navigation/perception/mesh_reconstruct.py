@@ -78,16 +78,19 @@ class DepthMesher:
         if len(self._faces) < self.max_faces:
             self._faces.append((a, b, c))
 
-    def add_frame(self, depth, intrinsics, cam_to_world, rgb=None) -> None:
+    def add_frame(self, depth, intrinsics, cam_to_world, rgb=None,
+                  confidence=None, min_confidence=1) -> None:
         """Fold one depth frame (HxW meters) plus its full 6-DoF camera transform into the mesh.
-        If `rgb` (the camera image) is given, each vertex is colored from it."""
+        If `rgb` (the camera image) is given, each vertex is colored from it. `confidence` (the
+        ARKit 0/1/2 map) drops phantom low-confidence dots from darkness / open space."""
         if self.full:
             return
         if np.asarray(depth).ndim != 2:
             return
         # Full 6-DoF back-projection, keeping the pixel grid so we can stitch triangles.
         mx, my, mz, valid, z = project_depth_grid(
-            depth, intrinsics, cam_to_world, self.stride, self.min_range_m, self.max_range_m
+            depth, intrinsics, cam_to_world, self.stride, self.min_range_m, self.max_range_m,
+            confidence, min_confidence
         )
         # Per-pixel color (sampled from the camera image), or a neutral gray if no RGB.
         cols = sample_rgb_grid(rgb, np.asarray(depth).shape, self.stride) if rgb is not None else None

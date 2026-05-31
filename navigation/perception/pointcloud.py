@@ -104,12 +104,16 @@ def _world_to_map(wx, wy, wz):
 
 
 def project_depth_grid(depth, intrinsics, cam_to_world, stride=4,
-                       min_range_m=0.2, max_range_m=4.0):
+                       min_range_m=0.2, max_range_m=4.0,
+                       confidence=None, min_confidence=1):
     """Back-project a depth frame to MAP-FRAME points using the full 6-DoF camera transform,
     KEEPING the pixel-grid structure so callers can both list points and stitch triangles.
 
     Inputs: depth HxW meters; intrinsics 3x3; cam_to_world 4x4 (PhoneFrame.extrinsic, ARKit
     world, Y up); stride; range band.
+    confidence: optional HxW ARKit confidence (0/1/2); pixels below `min_confidence` are
+        dropped. This rejects the phantom dots LiDAR invents in darkness / open space - the
+        ones that otherwise map as false obstacles and stop the rover early.
     Returns (mx, my, mz, valid, z), each shaped (gh, gw). mz is height above the floor.
     """
     d = np.asarray(depth, dtype=np.float32)
@@ -120,6 +124,10 @@ def project_depth_grid(depth, intrinsics, cam_to_world, stride=4,
     ys, xs = np.mgrid[0:h:stride, 0:w:stride]
     z = d[ys, xs]
     valid = np.isfinite(z) & (z > min_range_m) & (z < max_range_m)
+    if confidence is not None:
+        conf = np.asarray(confidence)
+        if conf.shape == d.shape:
+            valid = valid & (conf[ys, xs] >= min_confidence)
     # Invalid pixels are zeroed (masked out by `valid` on return); errstate keeps numpy's
     # float32-matmul FPE flag from emitting spurious divide/overflow warnings on them.
     with np.errstate(invalid="ignore", divide="ignore", over="ignore"):
@@ -141,14 +149,16 @@ def project_depth_grid(depth, intrinsics, cam_to_world, stride=4,
 
 
 def depth_to_points_6dof(depth, intrinsics, cam_to_world, stride=8,
-                         min_range_m=0.2, max_range_m=4.0) -> List[float]:
+                         min_range_m=0.2, max_range_m=4.0,
+                         confidence=None, min_confidence=1) -> List[float]:
     """Flat [x0,y0,z0, ...] map-frame point list via the full 6-DoF transform. The 6-DoF
     counterpart of depth_to_points(); use with PhoneFrame.extrinsic so tilted views render
     correctly instead of ramping vertical surfaces."""
     if np.asarray(depth).ndim != 2:
         return []
     mx, my, mz, valid, _ = project_depth_grid(
-        depth, intrinsics, cam_to_world, stride, min_range_m, max_range_m
+        depth, intrinsics, cam_to_world, stride, min_range_m, max_range_m,
+        confidence, min_confidence
     )
     if not valid.any():
         return []
@@ -174,13 +184,15 @@ def sample_rgb_grid(rgb, depth_shape, stride=4):
 
 
 def depth_to_points_rgb_6dof(depth, intrinsics, cam_to_world, rgb, stride=8,
-                             min_range_m=0.2, max_range_m=4.0):
+                             min_range_m=0.2, max_range_m=4.0,
+                             confidence=None, min_confidence=1):
     """Like depth_to_points_6dof, but also returns per-point color sampled from the camera image.
     Returns (points_flat [x,y,z,...] floats, colors_flat [r,g,b,...] as 0..255 ints)."""
     if np.asarray(depth).ndim != 2:
         return [], []
     mx, my, mz, valid, _ = project_depth_grid(
-        depth, intrinsics, cam_to_world, stride, min_range_m, max_range_m
+        depth, intrinsics, cam_to_world, stride, min_range_m, max_range_m,
+        confidence, min_confidence
     )
     if not valid.any():
         return [], []

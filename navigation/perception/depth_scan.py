@@ -37,12 +37,19 @@ def depth_to_scan(
     num_bins: int = 72,
     floor_z: Optional[float] = None,
     floor_percentile: float = 5.0,
+    confidence=None,
+    min_confidence: int = 2,
 ) -> List[Tuple[float, float]]:
     """Depth frame -> [(angle_offset_rad, range_m), ...] in the rover body frame.
 
     angle_offset is relative to pose.theta (CCW+); range is the horizontal distance to the
     nearest obstacle-height point at that bearing. Returns [] if nothing qualifies.
 
+    confidence / min_confidence: optional ARKit confidence map (0/1/2) and threshold. Defaults
+        to HIGH-only (2) for navigation, because LiDAR invents low-confidence phantom dots in
+        darkness / open space, and those map as FALSE obstacles that stop the rover early. A
+        real wall the rover is about to hit is close, so it returns high confidence and is kept.
+        Lower to 1 if the map comes out too sparse / a genuine matte wall is being missed.
     floor_z: map-frame height of the floor. If None it is estimated per-frame as the
         `floor_percentile` percentile of point heights (auto - no mount constant needed). On
         the real rover with a fixed mount, pass a stable floor (camera height - mount height)
@@ -51,7 +58,8 @@ def depth_to_scan(
     num_bins: azimuth resolution over the full circle (72 -> 5 degrees per bin).
     """
     mx, my, mz, valid, _ = project_depth_grid(
-        depth, intrinsics, cam_to_world, stride, min_range_m, max_range_m
+        depth, intrinsics, cam_to_world, stride, min_range_m, max_range_m,
+        confidence, min_confidence
     )
     if not valid.any():
         return []

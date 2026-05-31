@@ -116,6 +116,7 @@ def main() -> None:
             pts, cols = depth_to_points_rgb_6dof(
                 frame.depth, frame.intrinsics, frame.extrinsic, frame.rgb,
                 stride=STRIDE, min_range_m=MIN_RANGE_M, max_range_m=MAX_RANGE_M,
+                confidence=frame.confidence,  # drop low-confidence phantom dots (dark/open space)
             )
             _accumulate(cloud, pts, cols)  # every frame, at the phone's full rate
             frames += 1
