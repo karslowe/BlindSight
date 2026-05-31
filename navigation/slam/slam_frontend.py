@@ -17,9 +17,11 @@ from pathlib import Path
 from typing import Optional, Tuple
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "shared"))
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))  # navigation, for perception.*
 from schemas.schemas import ImuSample, Pose  # noqa: E402
 
 from bridge.phone_link import PhoneFrame, PhoneLink  # noqa: E402
+from perception.depth_scan import depth_to_scan  # noqa: E402
 
 
 class SlamFrontend:
@@ -58,6 +60,20 @@ class SlamFrontend:
         if self._last is None:
             return None
         return self._last.depth, self._last.intrinsics
+
+    def last_depth_scan(self):
+        """The most recent frame reduced to a 2D obstacle scan for the occupancy grid.
+
+        Returns [(angle_offset_rad, range_m), ...] in the rover body frame (empty if no frame
+        yet). This is the rich alternative to a single ultrasonic ray: the whole depth image
+        projected (with full 6-DoF) and sliced into a virtual laser scan. See
+        perception.depth_scan.depth_to_scan for the band/azimuth parameters.
+        """
+        if self._last is None:
+            return []
+        return depth_to_scan(
+            self._last.depth, self._last.intrinsics, self._last.extrinsic, self._last.pose
+        )
 
     def is_keyframe(self) -> bool:
         """Kept for interface compatibility; the phone handles keyframing internally."""

@@ -131,11 +131,12 @@ class Orchestrator:
         #    Per AGENT.MD every sensor contributes (angle_offset, range_m) rays.
         telemetry = self.car.read_telemetry()
         scan: list[tuple[float, float]] = []
-        # (Step 2) Side ToF: the 3 Modulino Distance beams at fixed angles.
+        # PRIMARY sensing: the phone's full depth image projected (6-DoF) and sliced into a
+        # 2D obstacle scan. This is what actually fills the map as the rover drives.
+        scan += self.slam.last_depth_scan()
+        # (Step 2) Side ToF: the 3 Modulino Distance beams at fixed angles (still stubbed).
         # scan += [(a, r) for a, r in zip(TOF_ANGLES, self.imu.read_distances()) if r is not None]
-        # (Step 3) Phone depth wedge sampled into rays.
-        # scan += self.slam.last_depth_scan()
-        # Fallback while Steps 2-3 are stubbed: the car's forward ultrasonic as one ray.
+        # Forward ultrasonic as one extra ray - catches glass / dark surfaces the LiDAR misses.
         if telemetry and telemetry.ultrasonic_distance is not None and telemetry.ultrasonic_distance >= 0:
             scan.append((0.0, telemetry.ultrasonic_distance))
         if scan:
