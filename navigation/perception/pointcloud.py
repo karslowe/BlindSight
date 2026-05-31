@@ -156,6 +156,39 @@ def depth_to_points_6dof(depth, intrinsics, cam_to_world, stride=8,
     return pts.reshape(-1).tolist()
 
 
+def sample_rgb_grid(rgb, depth_shape, stride=4):
+    """Sample the camera image at the SAME (stride) pixel grid project_depth_grid uses, scaling
+    from depth resolution up to RGB resolution. Returns (gh, gw, 3) uint8 (RGB).
+
+    Assumes RGB and depth share orientation + field of view (Record3D presents them as one
+    aligned RGBD frame; only the resolution differs). If colors come out rotated/mirrored, that
+    assumption is off for your capture and the index scaling here is where to fix it.
+    """
+    h, w = depth_shape
+    ys, xs = np.mgrid[0:h:stride, 0:w:stride]
+    r = np.asarray(rgb)
+    hc, wc = r.shape[0], r.shape[1]
+    rys = np.clip((ys * hc) // h, 0, hc - 1)
+    rxs = np.clip((xs * wc) // w, 0, wc - 1)
+    return r[rys, rxs]
+
+
+def depth_to_points_rgb_6dof(depth, intrinsics, cam_to_world, rgb, stride=8,
+                             min_range_m=0.2, max_range_m=4.0):
+    """Like depth_to_points_6dof, but also returns per-point color sampled from the camera image.
+    Returns (points_flat [x,y,z,...] floats, colors_flat [r,g,b,...] as 0..255 ints)."""
+    if np.asarray(depth).ndim != 2:
+        return [], []
+    mx, my, mz, valid, _ = project_depth_grid(
+        depth, intrinsics, cam_to_world, stride, min_range_m, max_range_m
+    )
+    if not valid.any():
+        return [], []
+    pts = np.stack([mx[valid], my[valid], mz[valid]], axis=1).astype(np.float32)
+    cols = sample_rgb_grid(rgb, np.asarray(depth).shape, stride)[valid].astype(np.int32)
+    return pts.reshape(-1).tolist(), cols.reshape(-1).tolist()
+
+
 def pose_from_extrinsic(cam_to_world):
     """Project the full camera transform to a ground-plane (x, y, theta) IN THE SAME map frame
     as the cloud/mesh, so the rover marker, grid, and 3D geometry all line up. Position is the

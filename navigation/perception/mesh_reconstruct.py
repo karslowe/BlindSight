@@ -26,7 +26,7 @@ from typing import Optional
 
 import numpy as np
 
-from .pointcloud import project_depth_grid
+from .pointcloud import project_depth_grid, sample_rgb_grid
 
 
 class DepthMesher:
@@ -52,11 +52,13 @@ class DepthMesher:
 
         self._vmap: dict = {}  # voxel key (kx,ky,kz) -> vertex index
         self._verts: list = []  # list of (x, y, z) map-frame vertices
+        self._vcols: list = []  # list of (r, g, b) per-vertex colors, parallel to _verts
         self._faces: list = []  # list of (i, j, k) vertex-index triangles
         self.full = False
 
-    def _vertex(self, key, x: float, y: float, z: float) -> int:
-        """Return the index of the welded vertex at `key`, creating it if new (None if full)."""
+    def _vertex(self, key, x: float, y: float, z: float, color) -> int:
+        """Return the index of the welded vertex at `key`, creating it (with `color`) if new.
+        Returns -1 if the vertex cap is hit. The first color seen for a voxel is kept."""
         idx = self._vmap.get(key)
         if idx is not None:
             return idx
@@ -65,6 +67,7 @@ class DepthMesher:
             return -1
         idx = len(self._verts)
         self._verts.append((x, y, z))
+        self._vcols.append((int(color[0]), int(color[1]), int(color[2])))
         self._vmap[key] = idx
         return idx
 
@@ -75,8 +78,9 @@ class DepthMesher:
         if len(self._faces) < self.max_faces:
             self._faces.append((a, b, c))
 
-    def add_frame(self, depth, intrinsics, cam_to_world) -> None:
-        """Fold one depth frame (HxW meters) plus its full 6-DoF camera transform into the mesh."""
+    def add_frame(self, depth, intrinsics, cam_to_world, rgb=None) -> None:
+        """Fold one depth frame (HxW meters) plus its full 6-DoF camera transform into the mesh.
+        If `rgb` (the camera image) is given, each vertex is colored from it."""
         if self.full:
             return
         if np.asarray(depth).ndim != 2:
@@ -85,6 +89,8 @@ class DepthMesher:
         mx, my, mz, valid, z = project_depth_grid(
             depth, intrinsics, cam_to_world, self.stride, self.min_range_m, self.max_range_m
         )
+        # Per-pixel color (sampled from the camera image), or a neutral gray if no RGB.
+        cols = sample_rgb_grid(rgb, np.asarray(depth).shape, self.stride) if rgb is not None else None
 
         # Voxel keys for welding.
         v = self.voxel_m
@@ -97,9 +103,10 @@ class DepthMesher:
         for i in range(gh):
             for j in range(gw):
                 if valid[i, j]:
+                    color = cols[i, j] if cols is not None else (200, 200, 200)
                     vidx[i, j] = self._vertex(
                         (int(kx[i, j]), int(ky[i, j]), int(kz[i, j])),
-                        float(mx[i, j]), float(my[i, j]), float(mz[i, j]),
+                        float(mx[i, j]), float(my[i, j]), float(mz[i, j]), color,
                     )
 
         # Stitch each 2x2 pixel block into two triangles (skip occlusion-edge quads).
@@ -131,7 +138,16 @@ class DepthMesher:
             faces.append(a)
             faces.append(b)
             faces.append(c)
-        return {"vertices": verts, "faces": faces}
+        out = {"vertices": verts, "faces": faces}
+        # Per-vertex colors (flat [r,g,b,...], 0..255), present only if RGB frames were fed in.
+        if self._vcols:
+            cols: list = []
+            for r, g, b in self._vcols:
+                cols.append(r)
+                cols.append(g)
+                cols.append(b)
+            out["colors"] = cols
+        return out
 
     def stats(self) -> tuple:
         return len(self._verts), len(self._faces)

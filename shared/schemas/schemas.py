@@ -282,8 +282,11 @@ class MapUpdate:
     # Optional 3D point cloud (for the 3D viz only; navigation never uses it). Flat list of
     # map-frame coords [x0,y0,z0, x1,y1,z1, ...]. Empty unless a depth source is producing it.
     point_cloud: List[float] = field(default_factory=list)
+    # Optional per-point color parallel to point_cloud (flat [r0,g0,b0, ...], 0..255). Same
+    # point count as point_cloud/3. Empty unless an RGB source is producing it. Viz only.
+    point_cloud_rgb: List[int] = field(default_factory=list)
     # Optional triangle mesh ("3D scan") for the 3D viz only; navigation never uses it.
-    # {"vertices": [x0,y0,z0, ...], "faces": [i0,j0,k0, ...]} (both flat). None when absent.
+    # {"vertices": [x0,y0,z0, ...], "faces": [i0,j0,k0, ...], optional "colors": [r0,g0,b0, ...]}.
     mesh: Optional[dict] = None
 
     def to_dict(self) -> dict:
@@ -299,6 +302,7 @@ class MapUpdate:
             "targets": [t.to_dict() for t in self.targets],
             "start": None if self.start is None else {"x": self.start["x"], "y": self.start["y"]},
             "point_cloud": list(self.point_cloud),
+            "point_cloud_rgb": list(self.point_cloud_rgb),
             "mesh": self.mesh,
         }
 
@@ -316,5 +320,6 @@ class MapUpdate:
             targets=[Target.from_dict(t) for t in d.get("targets", [])],
             start=None if not start else {"x": float(start["x"]), "y": float(start["y"])},
             point_cloud=list(d.get("point_cloud", [])),
+            point_cloud_rgb=list(d.get("point_cloud_rgb", [])),
             mesh=d.get("mesh"),
         )

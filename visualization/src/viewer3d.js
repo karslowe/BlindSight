@@ -177,17 +177,26 @@ function renderMap(update) {
       if (z < zmin) zmin = z; if (z > zmax) zmax = z;
     }
     const zr = Math.max(0.3, zmax - zmin); // adaptive height span (avoids all-red saturation)
-    // Pass 2: positions + color normalized over the cloud's actual height range.
+    // Real camera color if the producer sent it, else fall back to height coloring.
+    const rgb = update.point_cloud_rgb || [];
+    const hasRGB = rgb.length >= numPts * 3;
+    // Pass 2: positions + color (true RGB, or normalized over the actual height range).
     for (let i = 0; i < numPts; i++) {
       const mx = pc[3 * i], my = pc[3 * i + 1], mz = pc[3 * i + 2];
       ptPositions[3 * i] = mx;
       ptPositions[3 * i + 1] = mz; // height -> 3D up (y)
       ptPositions[3 * i + 2] = -my; // world y -> 3D -z
-      const t = Math.max(0, Math.min(1, (mz - zmin) / zr));
-      _col.setHSL(0.62 - 0.62 * t, 0.85, 0.55); // blue (low) -> red (high)
-      ptColors[3 * i] = _col.r;
-      ptColors[3 * i + 1] = _col.g;
-      ptColors[3 * i + 2] = _col.b;
+      if (hasRGB) {
+        ptColors[3 * i] = rgb[3 * i] / 255;
+        ptColors[3 * i + 1] = rgb[3 * i + 1] / 255;
+        ptColors[3 * i + 2] = rgb[3 * i + 2] / 255;
+      } else {
+        const t = Math.max(0, Math.min(1, (mz - zmin) / zr));
+        _col.setHSL(0.62 - 0.62 * t, 0.85, 0.55); // blue (low) -> red (high)
+        ptColors[3 * i] = _col.r;
+        ptColors[3 * i + 1] = _col.g;
+        ptColors[3 * i + 2] = _col.b;
+      }
     }
     ptGeo.setDrawRange(0, numPts);
     ptGeo.attributes.position.needsUpdate = true;

@@ -88,7 +88,10 @@ function updateScanMesh(mesh) {
     if (z < zmin) zmin = z; if (z > zmax) zmax = z;
   }
   const zr = Math.max(0.3, zmax - zmin);
-  // Pass 2: positions + color over the mesh's actual height range.
+  // Real camera color if the producer sent it, else height coloring.
+  const vc = mesh.colors || [];
+  const hasRGB = vc.length >= nVerts * 3;
+  // Pass 2: positions + color (true RGB, or over the mesh's actual height range).
   const pos = new Float32Array(nVerts * 3);
   const col = new Float32Array(nVerts * 3);
   for (let i = 0; i < nVerts; i++) {
@@ -96,11 +99,17 @@ function updateScanMesh(mesh) {
     pos[3 * i] = mx;
     pos[3 * i + 1] = mz;      // height -> 3D up (y)
     pos[3 * i + 2] = -my;     // world y -> 3D -z
-    const t = Math.max(0, Math.min(1, (mz - zmin) / zr)); // blue low -> red high
-    _col.setHSL(0.62 - 0.62 * t, 0.8, 0.55);
-    col[3 * i] = _col.r;
-    col[3 * i + 1] = _col.g;
-    col[3 * i + 2] = _col.b;
+    if (hasRGB) {
+      col[3 * i] = vc[3 * i] / 255;
+      col[3 * i + 1] = vc[3 * i + 1] / 255;
+      col[3 * i + 2] = vc[3 * i + 2] / 255;
+    } else {
+      const t = Math.max(0, Math.min(1, (mz - zmin) / zr)); // blue low -> red high
+      _col.setHSL(0.62 - 0.62 * t, 0.8, 0.55);
+      col[3 * i] = _col.r;
+      col[3 * i + 1] = _col.g;
+      col[3 * i + 2] = _col.b;
+    }
   }
   const geo = scanMesh.geometry;
   geo.setAttribute("position", new THREE.BufferAttribute(pos, 3));

@@ -237,6 +237,7 @@ class OccupancyGrid:
         start: Optional[dict] = None,
         point_cloud: Optional[list] = None,
         mesh: Optional[dict] = None,
+        point_cloud_rgb: Optional[list] = None,
     ) -> MapUpdate:
         """Serialize the current grid into a MapUpdate for the server / viz.
 
@@ -264,6 +265,7 @@ class OccupancyGrid:
             targets=targets or [],
             start=start,
             point_cloud=point_cloud or [],
+            point_cloud_rgb=point_cloud_rgb or [],
             mesh=mesh,
         )
 

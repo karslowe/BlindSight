@@ -38,7 +38,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "shared"))
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from bridge.phone_link import PhoneLink  # noqa: E402
 from mapping.occupancy_grid import OccupancyGrid  # noqa: E402
-from perception.pointcloud import depth_to_points_6dof  # noqa: E402
+from perception.pointcloud import depth_to_points_rgb_6dof  # noqa: E402
 
 # Sub-sample + range band for back-projection (fewer points = less bandwidth, smoother viz).
 # Lower stride = denser cloud (looks more like a continuous surface), more bandwidth/compute.
@@ -54,24 +54,30 @@ MAX_POINTS = 50000  # cap the accumulated cloud; matches the viewer's POINT_CAP
 PUBLISH_INTERVAL_S = 0.2
 
 
-def _accumulate(cloud: dict, pts: list) -> None:
-    """Fold this frame's flat [x,y,z,...] points into the voxel-deduped accumulated cloud."""
+def _accumulate(cloud: dict, pts: list, cols: list) -> None:
+    """Fold this frame's flat [x,y,z,...] points (+ [r,g,b,...] colors) into the voxel-deduped
+    accumulated cloud. The first color seen for a voxel is kept."""
     for i in range(0, len(pts) - 2, 3):
         x, y, z = pts[i], pts[i + 1], pts[i + 2]
         key = (round(x / VOXEL_M), round(y / VOXEL_M), round(z / VOXEL_M))
         if key not in cloud:
             if len(cloud) >= MAX_POINTS:
                 return
-            cloud[key] = (x, y, z)
+            cloud[key] = (x, y, z, cols[i], cols[i + 1], cols[i + 2])
 
 
-def _flat(cloud: dict) -> list:
-    out: list = []
-    for x, y, z in cloud.values():
-        out.append(x)
-        out.append(y)
-        out.append(z)
-    return out
+def _flat(cloud: dict):
+    """Return (points_flat [x,y,z,...], colors_flat [r,g,b,...]) for the accumulated cloud."""
+    pts: list = []
+    rgb: list = []
+    for x, y, z, r, g, b in cloud.values():
+        pts.append(x)
+        pts.append(y)
+        pts.append(z)
+        rgb.append(r)
+        rgb.append(g)
+        rgb.append(b)
+    return pts, rgb
 
 
 def main() -> None:
@@ -107,18 +113,20 @@ def main() -> None:
                 print(f"first frame: depth {frame.depth.shape}, "
                       f"range {float(frame.depth.min()):.2f}..{float(frame.depth.max()):.2f} "
                       f"(if that range looks like mm, see CALIBRATION in this file)")
-            pts = depth_to_points_6dof(
-                frame.depth, frame.intrinsics, frame.extrinsic,
+            pts, cols = depth_to_points_rgb_6dof(
+                frame.depth, frame.intrinsics, frame.extrinsic, frame.rgb,
                 stride=STRIDE, min_range_m=MIN_RANGE_M, max_range_m=MAX_RANGE_M,
             )
-            _accumulate(cloud, pts)  # every frame, at the phone's full rate
+            _accumulate(cloud, pts, cols)  # every frame, at the phone's full rate
             frames += 1
             now = time.monotonic()
             if now - last_publish >= PUBLISH_INTERVAL_S:
                 last_publish = now
                 home = {"x": start.x, "y": start.y}
+                pflat, rgbflat = _flat(cloud)
                 # 2D map stays empty here (3D cloud only); pose + cloud carry it.
-                server.publish(grid.to_map_update(frame.pose, [], [], home, _flat(cloud)))
+                server.publish(grid.to_map_update(
+                    frame.pose, [], [], home, pflat, point_cloud_rgb=rgbflat))
             if frames % 30 == 0 and cloud:
                 xs = [p[0] for p in cloud.values()]
                 ys = [p[1] for p in cloud.values()]

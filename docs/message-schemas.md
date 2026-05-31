@@ -138,7 +138,8 @@ robot's current pose, and the planned return path.
 | `targets` | Target[] | - | Detected objects of interest (e.g. from YOLO), in the map frame. Empty until something is found. |
 | `start` | object `{x, y}` or null | m | Map-frame position of the mission start (home), for the viewer's START marker. null until set. |
 | `point_cloud` | float[] | m | Optional 3D point cloud for the 3D viz only (navigation never uses it). Flat `[x0,y0,z0, x1,y1,z1, ...]` in the map frame. Empty unless a depth source produces it. |
-| `mesh` | object `{vertices, faces}` or null | m | Optional reconstructed triangle mesh ("3D scan") for the 3D viz only (navigation never uses it). `vertices` is a flat `[x0,y0,z0, ...]` map-frame list; `faces` is a flat `[i0,j0,k0, ...]` triangle-index list. null unless a depth source produces it. |
+| `point_cloud_rgb` | int[] | - | Optional per-point color parallel to `point_cloud` (flat `[r0,g0,b0, ...]`, 0..255). Same point count as `point_cloud`/3. Empty unless an RGB source produces it. Viz only. |
+| `mesh` | object `{vertices, faces, colors?}` or null | m | Optional reconstructed triangle mesh ("3D scan") for the 3D viz only (navigation never uses it). `vertices` flat `[x0,y0,z0, ...]` map-frame; `faces` flat `[i0,j0,k0, ...]` triangle indices; optional `colors` flat `[r0,g0,b0, ...]` (0..255) per vertex. null unless a depth source produces it. |
 
 Where a `Waypoint` is:
 

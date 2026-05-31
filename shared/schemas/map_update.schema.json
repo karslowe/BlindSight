@@ -68,12 +68,18 @@
       "description": "Optional 3D point cloud for the 3D viz only (navigation never uses it). Flat list of map-frame coords [x0,y0,z0, x1,y1,z1, ...]. Empty unless a depth source produces it.",
       "items": { "type": "number" }
     },
+    "point_cloud_rgb": {
+      "type": "array",
+      "description": "Optional per-point color parallel to point_cloud (flat [r0,g0,b0, ...], 0..255). Same point count as point_cloud/3. Empty unless an RGB source produces it. Viz only.",
+      "items": { "type": "integer", "minimum": 0, "maximum": 255 }
+    },
     "mesh": {
       "type": ["object", "null"],
       "description": "Optional reconstructed triangle mesh ('3D scan') for the 3D viz only (navigation never uses it). null unless a depth source produces it.",
       "properties": {
         "vertices": { "type": "array", "items": { "type": "number" }, "description": "Flat map-frame vertex coords [x0,y0,z0, ...]." },
-        "faces": { "type": "array", "items": { "type": "integer" }, "description": "Flat triangle vertex indices [i0,j0,k0, ...]." }
+        "faces": { "type": "array", "items": { "type": "integer" }, "description": "Flat triangle vertex indices [i0,j0,k0, ...]." },
+        "colors": { "type": "array", "items": { "type": "integer", "minimum": 0, "maximum": 255 }, "description": "Optional flat per-vertex color [r0,g0,b0, ...] (0..255), parallel to vertices." }
       },
       "required": ["vertices", "faces"],
       "additionalProperties": false
