@@ -111,8 +111,14 @@ def main() -> None:
             # 2D map stays empty here (this test is the 3D cloud only); pose + cloud carry it.
             server.publish(grid.to_map_update(frame.pose, [], [], home, _flat(cloud)))
             frames += 1
-            if frames % 30 == 0:
-                print(f"  {frames} frames, {len(cloud)} points")
+            if frames % 30 == 0 and cloud:
+                xs = [p[0] for p in cloud.values()]
+                ys = [p[1] for p in cloud.values()]
+                zs = [p[2] for p in cloud.values()]
+                print(f"  {frames} fr, {len(cloud)} pts | rover xy ({frame.pose.x:+.2f},{frame.pose.y:+.2f}) "
+                      f"cam_height {float(frame.extrinsic[1, 3]):+.2f} | "
+                      f"cloud x[{min(xs):+.2f},{max(xs):+.2f}] y[{min(ys):+.2f},{max(ys):+.2f}] "
+                      f"z[{min(zs):+.2f},{max(zs):+.2f}]")
     except KeyboardInterrupt:
         print(f"\nstopped ({frames} frames, {len(cloud)} points)")
 
