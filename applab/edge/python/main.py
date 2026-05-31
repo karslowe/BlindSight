@@ -427,6 +427,25 @@ class _Handler(BaseHTTPRequestHandler):
                 s["bridge"] = _BRIDGE
                 s["calibrating"] = _calibrating
                 s["armed"] = _armed
+            # Navigator internals — so we can see WHY it's doing what it's doing (survey vs
+            # recovery vs exploring, what it's blocked by) instead of guessing.
+            with _nav_lock:
+                try:
+                    s["nav"] = {
+                        "surveying": _nav._surveying,
+                        "survey_deg": round(_nav._survey_accum * 57.3, 0),
+                        "recovery": _nav._recovery,
+                        "recovery_count": _nav._recovery_count,
+                        "turn_swept_deg": round(_nav._turn_swept * 57.3, 0),
+                        "turn_sign": _nav._turn_sign,
+                        "fwd_clear_m": round(_nav._forward_clear(), 2),
+                        "blocked_ahead": _nav._blocked_ahead(),
+                        "boxed": _nav._boxed(),
+                        "dist_since_survey": round(_nav._dist_since_survey, 2),
+                        "returning": _nav.returning,
+                    }
+                except Exception as e:  # noqa: BLE001
+                    s["nav"] = {"error": str(e)}
             self._send(200, "application/json", json.dumps(s).encode())
         else:
             asset = _static(path)

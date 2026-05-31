@@ -42,14 +42,15 @@ STUCK_WINDOW_S = 2.0    # window over which to measure progress
 STUCK_DIST_M = 0.06     # net displacement under this over the window (while driving) = stuck
 REV_V = 0.08            # reverse speed, m/s — GENTLE: the rover is blind behind (no rear sensor)
 REVERSE_S = 0.6         # reverse phase duration (~5 cm); only used as a last resort, see below
-TURN_W = 1.0            # turn rate during recovery, rad/s (+ = CCW/left); brisk + decisive
-# Medium-first, then refine: start with a moderate turn toward the open side and increase it
-# in small steps on each consecutive recovery (and flip side if it keeps failing), so it homes
-# in on the clear heading instead of overshooting with a big swing.
-TURN_BASE_RAD = math.radians(50)
-TURN_STEP_RAD = math.radians(18)
-TURN_MAX_RAD = math.radians(170)
-RECOVERY_RESET_M = 0.30  # if the rover moved this far since the last recovery, it "worked"
+TURN_W = 1.0            # turn rate during recovery, rad/s (+ = CCW/left)
+# Pick ONE direction (toward the open side) and keep turning that way until the path ahead is
+# clear, then commit forward into it. No flipping / no fixed-angle re-evaluation — that caused
+# the CW/CCW dithering where it spun in place instead of driving into the obvious clear path.
+TURN_CLEAR_M = 0.80     # forward clearance that counts as "clear enough to drive" -> stop turning
+TURN_MAX_SWEEP_RAD = 2 * math.pi * 1.25  # if a full sweep finds nothing clear, back out a bit
+ESCAPE_V = 0.18         # speed to commit forward into the clear once facing it, m/s
+ESCAPE_DIST_M = 0.50    # drive this far into the clear before handing back to exploration
+RECOVERY_RESET_M = 0.30  # moved this far since last recovery => a fresh episode (re-pick side)
 
 # ---- reactive obstacle avoidance (sidestep small obstacles instead of reversing) ----
 AVOID_DIST_M = 0.90     # obstacle in the forward cone nearer than this -> steer around it
@@ -99,12 +100,14 @@ class Navigator:
         self.mission_start: "float | None" = None
         self._explore_ticks = 0
 
-        # Recovery state.
-        self._recovery: "str | None" = None      # None | "REVERSE" | "TURN"
+        # Recovery state. Commit to ONE turn direction per stuck episode and turn until the
+        # path ahead is clear — never flip mid-episode (that caused the CW/CCW dithering).
+        self._recovery: "str | None" = None      # None | "REVERSE" | "TURN" | "ESCAPE"
         self._recovery_until = 0.0               # wall-clock deadline for the REVERSE phase
-        self._turn_sign = 1.0                    # +1 turn left (CCW), -1 turn right
-        self._turn_target = TURN_BASE_RAD        # how far to turn this recovery (rad)
-        self._turn_start_theta = 0.0             # heading captured when the TURN phase begins
+        self._turn_sign = 1.0                    # +1 turn left (CCW), -1 turn right (committed)
+        self._turn_swept = 0.0                   # radians turned so far this episode
+        self._turn_prev_theta = 0.0
+        self._escape_from: "tuple[float, float] | None" = None  # pose at start of ESCAPE
         self._recovery_count = 0                 # consecutive recoveries without progress
         self._last_recovery_pos: "tuple[float, float] | None" = None
         self._last_scan = None                   # most recent scan (incl. ToF rays)
@@ -308,44 +311,69 @@ class Navigator:
                 return 1.0 if lmin > rmin else -1.0
         return 1.0
 
+    def _forward_clear(self) -> float:
+        """Nearest obstacle in the forward cone (meters); NO_RETURN_M if nothing ahead."""
+        if not self._last_scan:
+            return NO_RETURN_M
+        fwd = [r for a, r in self._last_scan if abs(a) < FWD_CONE_RAD and 0 < r < NO_RETURN_M]
+        return min(fwd) if fwd else NO_RETURN_M
+
     def _begin_recovery(self, now: float, pose: Pose) -> DriveCommand:
-        # Consecutive failures (didn't move far since the last recovery) -> escalate the turn.
-        moved = (self._last_recovery_pos is None or
+        # New stuck episode (we moved away since the last one) -> pick a turn direction ONCE and
+        # commit to it. Same spot again -> keep the same direction (never flip) and count up.
+        fresh = (self._last_recovery_pos is None or
                  math.hypot(pose.x - self._last_recovery_pos[0],
                             pose.y - self._last_recovery_pos[1]) > RECOVERY_RESET_M)
-        self._recovery_count = 1 if moved else self._recovery_count + 1
+        if fresh:
+            self._recovery_count = 1
+            self._turn_sign = self._open_side_sign()   # commit to one direction for the episode
+        else:
+            self._recovery_count += 1
         self._last_recovery_pos = (pose.x, pose.y)
-        self._turn_target = min(TURN_BASE_RAD + (self._recovery_count - 1) * TURN_STEP_RAD,
-                                TURN_MAX_RAD)
-        self._turn_sign = self._open_side_sign()
-        if self._recovery_count >= 3:          # chosen side clearly isn't working -> flip
-            self._turn_sign = -self._turn_sign
-        # SAFETY: no rear collision sensor, so DON'T blindly reverse by default. Turn in place
-        # first (no translation) — that escapes most situations using the surveyed surroundings.
-        # Only back out (gently, briefly) once we're clearly trapped in a pocket (repeated
-        # recoveries without progress), where turning alone can't free the rover.
+        self._turn_swept = 0.0
+        self._turn_prev_theta = pose.theta
+        # Repeatedly stuck in the same spot -> back out gently first (no rear sensor, so brief),
+        # then keep turning the SAME way. Otherwise just start turning.
         if self._recovery_count >= 3:
             self._recovery = "REVERSE"
             self._recovery_until = now + REVERSE_S
             return DriveCommand(-REV_V, 0.0, 0)
         self._recovery = "TURN"
-        self._turn_start_theta = pose.theta
         return DriveCommand(0.0, self._turn_sign * TURN_W, 0)
 
     def _run_recovery(self, now: float, pose: Pose) -> DriveCommand:
         if self._recovery == "REVERSE":
             if now < self._recovery_until:
                 return DriveCommand(-REV_V, 0.0, 0)
-            self._recovery = "TURN"               # start the (angle-based) turn
-            self._turn_start_theta = pose.theta
+            self._recovery = "TURN"
+            self._turn_swept = 0.0
+            self._turn_prev_theta = pose.theta
             return DriveCommand(0.0, self._turn_sign * TURN_W, 0)
 
-        # TURN phase: turn until we've swept _turn_target radians (aggressive, committed).
-        if abs(_wrap(pose.theta - self._turn_start_theta)) < self._turn_target:
-            return DriveCommand(0.0, self._turn_sign * TURN_W, 0)
+        if self._recovery == "ESCAPE":
+            # Commit forward into the clear path so we actually leave the obstacle instead of
+            # immediately re-targeting back toward it and spinning again.
+            moved = self._escape_from is None or math.hypot(
+                pose.x - self._escape_from[0], pose.y - self._escape_from[1]) >= ESCAPE_DIST_M
+            if not moved and self._forward_clear() > FWD_CLEAR_M:
+                return DriveCommand(ESCAPE_V, 0.0, 0)
+            return self._end_recovery(pose)
 
-        # Done -> exit; reset stuck history. Re-plan from the new heading: a fresh frontier
-        # when exploring, or a fresh route home when returning (recovery cleared the old path).
+        # TURN phase: keep turning the COMMITTED direction until the path ahead is clear.
+        self._turn_swept += abs(_wrap(pose.theta - self._turn_prev_theta))
+        self._turn_prev_theta = pose.theta
+        if self._forward_clear() >= TURN_CLEAR_M:
+            self._recovery = "ESCAPE"            # found a clear heading -> drive into it
+            self._escape_from = (pose.x, pose.y)
+            return DriveCommand(ESCAPE_V, 0.0, 0)
+        if self._turn_swept >= TURN_MAX_SWEEP_RAD:
+            # Swept a full circle with nothing clear -> back out a bit, then keep turning SAME way.
+            self._recovery = "REVERSE"
+            self._recovery_until = now + REVERSE_S
+            return DriveCommand(-REV_V, 0.0, 0)
+        return DriveCommand(0.0, self._turn_sign * TURN_W, 0)
+
+    def _end_recovery(self, pose: Pose) -> DriveCommand:
         self._recovery = None
         self._pose_hist.clear()
         if self.returning and self.start_pose is not None:
