@@ -9,10 +9,11 @@
  * Bridge API confirmed against the Arduino examples (color-your-leds): Bridge.begin() in
  * setup(), Bridge.provide(name, fn) exposes a function to Python.
  *
- * NO TELEMETRY: the ultrasonic was removed (no time to level-shift its 5 V echo to the
- * UNO Q's 3.3 V). The car's other onboard sensors (ITR20001 line trackers) share that 5 V
- * issue and aren't used by the brain, so the whole sketch->brain telemetry path is dropped.
- * Re-add it with `Bridge.notify("car_telemetry", ...)` + level-shifting if needed later.
+ * NO TELEMETRY / NO ToF on this sketch: the ultrasonic was dropped (5 V echo needs a level
+ * shifter) and the two front ToF were Modulino Distance, which both sit at I2C 0x29 and need
+ * a Modulino Hub to coexist — we don't have a hub, so they're dropped. The brain falls back
+ * to the phone depth scan for turn-direction decisions. (To add ToF later: a Modulino Hub +
+ * two ModulinoDistance(hub.port(N)), or any sensor that can send Bridge.notify("tof",L,R).)
  *
  * PINS + MOTOR TOPOLOGY are the Elegoo Smart Car V4 defaults from BlindSight/car-firmware
  * (the V4 uses ONE direction pin per motor + a PWM pin + a shared STBY). Still needs a bench
@@ -25,6 +26,13 @@
 // ---- calibration (measure on the real Smart Car V4) -------------------------------
 static const float TRACK_WIDTH_M   = 0.15f;  // distance between drive wheels (m) — measure
 static const float MAX_WHEEL_SPEED = 0.60f;  // wheel m/s at full PWM (255) — calibrate
+// Motors won't turn below a minimum duty (static friction / driver deadband). Any nonzero
+// command is bumped up to at least this PWM so slow moves — especially IN-PLACE TURNS, which
+// otherwise map to ~PWM 30 and don't move at all (the rover then can't survey or aim, and
+// gets stuck) — actually spin the wheels. In-place turns counter-rotate both wheels, so they
+// need MORE than straight driving. Tune: lowest value that reliably turns the car in place
+// (raise if it still won't pivot; lower if turns are too violent).
+static const int MOTOR_MIN_PWM = 70;
 
 // ---- safety -----------------------------------------------------------------------
 static const unsigned long COMMAND_TIMEOUT_MS = 500;  // brake if no drive cmd within this
@@ -44,6 +52,7 @@ static unsigned long last_command_ms = 0;
 static void drive_channel(int dir_pin, int pwm_pin, int16_t speed, bool invert) {
   if (invert) speed = -speed;
   int mag = abs(speed); if (mag > 255) mag = 255;
+  if (mag > 0 && mag < MOTOR_MIN_PWM) mag = MOTOR_MIN_PWM;  // overcome motor/driver deadband
   digitalWrite(dir_pin, speed >= 0 ? HIGH : LOW);
   analogWrite(pwm_pin, mag);
 }
@@ -68,8 +77,12 @@ static void drive(float linear_velocity, float angular_velocity, int stop) {
   last_command_ms = millis();
   if (stop) { motors_stop(); Monitor.println("[drive] STOP"); return; }
   float half = TRACK_WIDTH_M * 0.5f;
-  float v_left  = linear_velocity - angular_velocity * half;
-  float v_right = linear_velocity + angular_velocity * half;
+  // Turn direction is inverted on this car (bench-confirmed: +w/CCW command physically
+  // turned CW), so the angular term is flipped here. Forward (w=0) is unaffected. With this,
+  // +w turns the rover left/CCW, which the camera pose reports as increasing theta — so the
+  // brain's steering converges instead of spinning away from its target.
+  float v_left  = linear_velocity + angular_velocity * half;
+  float v_right = linear_velocity - angular_velocity * half;
   motors_set((int16_t)(v_left  / MAX_WHEEL_SPEED * 255.0f),
              (int16_t)(v_right / MAX_WHEEL_SPEED * 255.0f));
   // DEBUG: confirms the MCU received the Bridge call + the PWM it applied. Watch with
@@ -94,7 +107,6 @@ void setup() {
 
 void loop() {
   // Safety watchdog: brake if the brain has gone quiet (lost connection / crash).
-  // DEBUG: announce the brake once per stretch so a quiet Bridge is visible on the monitor.
   static bool braking = false;
   if (millis() - last_command_ms > COMMAND_TIMEOUT_MS) {
     motors_stop();

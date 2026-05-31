@@ -50,6 +50,7 @@ ZLIB_LEVEL = 1      # 0=none(biggest,fastest) .. 9=smallest(slowest). 1 is the L
 DOWNSCALE = 1       # 1 = full 480x640; 2 = quarter the pixels (faster encode + transfer).
 SCAN_RAYS = 90      # columns sampled from the depth band into the horizontal scan.
 SCAN_BAND = 0.10    # fraction of image height (around vertical center) used as the scan band.
+FRAME_TIMEOUT_S = 3.0  # no new frame for this long => stream is dead; disconnect + reconnect.
 
 _lock = threading.Lock()
 # latest_depth holds ONLY the newest frame (overwritten each callback). frame_id bumps so the
@@ -265,6 +266,7 @@ def _capture_loop() -> None:
 
         stopped = threading.Event()
         stream = Record3DStream()
+        last_frame = [time.time()]   # wall-clock of the most recent frame (watchdog input)
 
         def on_new_frame() -> None:
             # CHEAP: copy the newest depth (record3d reuses its buffer) and drop the old one.
@@ -297,6 +299,7 @@ def _capture_loop() -> None:
                     if scan is not None:
                         _state["scan"] = scan
                     _state["capture"] = "STREAMING — LiDAR depth live"
+                last_frame[0] = time.time()
             except Exception as e:  # noqa: BLE001
                 with _lock:
                     _state["capture"] = f"frame grab error: {e!r}"
@@ -305,6 +308,7 @@ def _capture_loop() -> None:
         stream.on_stream_stopped = lambda: stopped.set()
         try:
             stream.connect(devices[0])
+            last_frame[0] = time.time()   # grace period before the watchdog can fire
             with _lock:
                 _state["capture"] = "connected — waiting for frames (is the phone streaming?)"
         except Exception as e:  # noqa: BLE001
@@ -312,10 +316,21 @@ def _capture_loop() -> None:
                 _state["capture"] = f"connect() raised: {e!r}"
             time.sleep(3)
             continue
-        stopped.wait()
-        with _lock:
-            _state["capture"] = "stream stopped; reconnecting..."
-        time.sleep(2)
+
+        # Watchdog: reconnect on an explicit stop OR if frames go silent. record3d USB drops
+        # frequently DON'T fire on_stream_stopped — leaving a dead stream while the phone sits
+        # on "waiting for connection" forever. Forcing a disconnect+reconnect re-initiates the
+        # handshake the phone is waiting for, so the feed self-heals without a manual restart.
+        while not stopped.wait(0.5):
+            if time.time() - last_frame[0] > FRAME_TIMEOUT_S:
+                with _lock:
+                    _state["capture"] = "frames stalled; reconnecting..."
+                break
+        try:
+            stream.disconnect()
+        except Exception:  # noqa: BLE001
+            pass
+        time.sleep(1.0)
 
 
 # ---------------------------------------------------------------------------- web -----
