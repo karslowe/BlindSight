@@ -97,61 +97,86 @@ def _extrinsic_from_camera(cam) -> np.ndarray:
 
 
 class PhoneLink:
-    """Owns the Record3D stream and yields PhoneFrames."""
+    """Owns the Record3D stream and yields PhoneFrames.
 
-    def __init__(self, device_index: int = 0) -> None:
+    SELF-HEALING: the iPhone stream drops whenever the phone sleeps / the app backgrounds /
+    USB hiccups. read() watches for that (a stream-stopped callback AND a no-frames watchdog)
+    and transparently reconnects when the device comes back, so the orchestrator loop never
+    has to be restarted - it just resumes once the phone wakes.
+    """
+
+    def __init__(self, device_index: int = 0, stale_timeout_s: float = 3.0,
+                 reconnect_interval_s: float = 2.0) -> None:
         self.device_index = device_index
+        self.stale_timeout_s = stale_timeout_s  # no frames for this long -> assume dropped
+        self.reconnect_interval_s = reconnect_interval_s  # how often to retry while down
         self._stream = None
         self._new = False
+        self._stopped = False  # set by the on_stream_stopped callback
+        self._lost = False  # currently in a dropped state (for one-shot logging)
+        self._last_frame_t = 0.0
+        self._last_reconnect_t = 0.0
 
-    def connect(self) -> None:
-        """Connect to the first available Record3D device. Raises if none / no dep."""
+    def _open_stream(self) -> bool:
+        """(Re)create and connect the Record3D stream to the device. Returns True on success,
+        False if no device is currently visible (phone asleep / unplugged) - caller retries."""
         if not _RECORD3D:
             raise RuntimeError(
                 "record3d not installed; pip install record3d (and the Record3D iOS app)"
             )
         devices = Record3DStream.get_connected_devices()
-        if not devices:
+        if not devices or self.device_index >= len(devices):
+            return False
+        if self._stream is not None:
+            try:
+                self._stream.disconnect()  # clean up the old (dead) session
+            except Exception:
+                pass
+        self._stream = Record3DStream()
+        self._stream.on_new_frame = self._on_new_frame
+        try:
+            self._stream.on_stream_stopped = self._on_stream_stopped  # older bindings may lack it
+        except Exception:
+            pass
+        self._stopped = False
+        self._new = False
+        self._stream.connect(devices[self.device_index])
+        self._last_frame_t = time.monotonic()  # grace period before the watchdog can fire
+        return True
+
+    def connect(self) -> None:
+        """Connect to the first available Record3D device. Raises if none / no dep. After this,
+        read() keeps the link alive on its own (auto-reconnect)."""
+        if not _RECORD3D:
+            raise RuntimeError(
+                "record3d not installed; pip install record3d (and the Record3D iOS app)"
+            )
+        if not self._open_stream():
             raise RuntimeError(
                 "no Record3D device found; connect the phone and enable USB Streaming"
             )
-        self._stream = Record3DStream()
-        self._stream.on_new_frame = self._on_new_frame
-        self._stream.connect(devices[self.device_index])
 
     def _on_new_frame(self) -> None:
         self._new = True
 
-    def read(self) -> Optional[PhoneFrame]:
-        """Return the latest PhoneFrame, or None if no new frame is ready.
+    def _on_stream_stopped(self) -> None:
+        self._stopped = True
 
-        Non-blocking: relies on the on_new_frame callback flag so the orchestrator loop
-        never stalls waiting on the phone.
-        """
-        if self._stream is None:
-            raise RuntimeError("call connect() first")
-        if not self._new:
-            return None
-        self._new = False
-        # Pull the synchronized RGBD + pose for this frame. These getter names are verified
-        # against the Record3D demo (get_depth_frame / get_intrinsic_mat / get_camera_pose).
-        # ON DEVICE, still confirm: depth UNITS (expected meters) and SHAPE (HxW numpy), and
-        # the pose's world-frame convention (calibrated in _pose_from_camera).
-        depth = self._stream.get_depth_frame()  # HxW, meters (verify)
+    def _build_frame(self, ts: float) -> PhoneFrame:
+        """Pull the synchronized RGBD + pose for the current frame into a PhoneFrame."""
+        depth = self._stream.get_depth_frame()  # HxW, meters
         coeffs = self._stream.get_intrinsic_mat()  # IntrinsicMatrixCoeffs(fx, fy, tx, ty)
         cam = self._stream.get_camera_pose()  # CameraPose(qx/qy/qz/qw, tx/ty/tz)
         rgb = np.asarray(self._stream.get_rgb_frame())  # HcxWcx3 uint8 (higher res than depth)
         if rgb.ndim == 3 and rgb.shape[2] > 3:
             rgb = rgb[..., :3]  # drop alpha if present
-        # ARKit confidence per depth pixel (0=low/1=med/2=high). Low = no real LiDAR return
-        # (darkness / open space / absorptive surfaces) - the source of phantom obstacle dots.
+        # ARKit confidence per depth pixel (0=low/1=med/2=high). Low = no real LiDAR return.
         try:
             conf = np.asarray(self._stream.get_confidence_frame())
         except Exception:
             conf = None
-        ts = time.monotonic()
-        # Build the full 6-DoF transform, then derive the 2D pose from it (via the SAME map
-        # convention as the cloud/mesh) so the rover marker and the 3D geometry stay aligned.
+        # Full 6-DoF transform; the 2D pose is derived from it (same map convention as the
+        # cloud/mesh) so the rover marker and the 3D geometry stay aligned.
         extrinsic = _extrinsic_from_camera(cam)
         px, py, th = pose_from_extrinsic(extrinsic)
         return PhoneFrame(
@@ -163,3 +188,42 @@ class PhoneLink:
             rgb=rgb,
             confidence=conf,
         )
+
+    def read(self) -> Optional[PhoneFrame]:
+        """Return the latest PhoneFrame, or None if no new frame is ready.
+
+        Non-blocking: relies on the on_new_frame flag so the loop never stalls. If the stream
+        has dropped (callback or no frames for stale_timeout_s), it retries the connection
+        every reconnect_interval_s and resumes automatically when the phone comes back.
+        """
+        if self._stream is None:
+            raise RuntimeError("call connect() first")
+        now = time.monotonic()
+
+        if self._new:
+            self._new = False
+            try:
+                frame = self._build_frame(now)
+            except Exception:
+                self._stopped = True  # the stream died mid-read; fall through to reconnect
+                return None
+            self._last_frame_t = now
+            if self._lost:
+                print("[phone] stream recovered")
+                self._lost = False
+            return frame
+
+        # No new frame: is the stream down? If so, retry the connection on a throttle.
+        down = self._stopped or (now - self._last_frame_t) > self.stale_timeout_s
+        if down:
+            if not self._lost:
+                print(f"[phone] stream lost (no frames for {self.stale_timeout_s:.0f}s); "
+                      "reconnecting when the phone is back...")
+                self._lost = True
+            if now - self._last_reconnect_t >= self.reconnect_interval_s:
+                self._last_reconnect_t = now
+                try:
+                    self._open_stream()  # no-op (returns False) while no device is visible
+                except Exception:
+                    pass
+        return None
