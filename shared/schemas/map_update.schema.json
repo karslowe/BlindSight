@@ -67,6 +67,16 @@
       "type": "array",
       "description": "Optional 3D point cloud for the 3D viz only (navigation never uses it). Flat list of map-frame coords [x0,y0,z0, x1,y1,z1, ...]. Empty unless a depth source produces it.",
       "items": { "type": "number" }
+    },
+    "mesh": {
+      "type": ["object", "null"],
+      "description": "Optional reconstructed triangle mesh ('3D scan') for the 3D viz only (navigation never uses it). null unless a depth source produces it.",
+      "properties": {
+        "vertices": { "type": "array", "items": { "type": "number" }, "description": "Flat map-frame vertex coords [x0,y0,z0, ...]." },
+        "faces": { "type": "array", "items": { "type": "integer" }, "description": "Flat triangle vertex indices [i0,j0,k0, ...]." }
+      },
+      "required": ["vertices", "faces"],
+      "additionalProperties": false
     }
   },
   "required": ["width", "height", "resolution_m", "origin", "cells", "pose", "return_path"],
