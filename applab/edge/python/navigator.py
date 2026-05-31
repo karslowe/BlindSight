@@ -65,16 +65,22 @@ SIDE_OPEN_M = 0.60      # a side counts as "open enough to slip past" if clearer
 # ---- corridor centering: keep parallel/centred so it reaches the end of a corridor instead
 # of drifting into a side wall when heading down it at an angle ----
 CORRIDOR_DIST_M = 1.6   # a side ray closer than this = a wall is there -> center against it
-CENTER_GAIN = 0.9       # steer-back strength per metre of left/right clearance imbalance
+CENTER_GAIN = 0.45      # steer-back strength per metre of L/R imbalance (gentle — small
+                        # continuous corrections, not big swings)
+CENTER_W_MAX = 0.5      # cap the centering correction so it can't make a sharp turn
 CENTER_SIDE_RAD = 0.30  # rays beyond +/- this graze the side walls (used for centering)
+CENTER_DEADBAND_M = 0.25  # ignore L/R imbalance smaller than this (don't chatter when level)
 
 # ---- 360 survey spin: stop and turn a full circle to map the surroundings -----------
 SURVEY_W = 1.0              # spin rate during a survey, rad/s
-SURVEY_MIN_GAP_M = 1.5      # don't survey again until at least this much new ground is covered.
+SURVEY_MIN_GAP_M = 2.5      # don't survey again until at least this much new ground is covered.
                             # Surveys fire at DECISION POINTS (the current path is done — a
                             # junction / "another path to consider"), NOT on a fixed interval,
                             # so the rover commits to driving a direction as far as it goes
                             # first; this gap just stops it spinning after a trivially short hop.
+SURVEY_AHEAD_M = 1.3        # only survey if something is within this ahead (a junction/end to
+                            # assess). If the way ahead is wide open (a long straight), DON'T
+                            # stop to spin — commit and keep driving down it.
 SURVEY_SWEEP_RAD = 2 * math.pi * 0.97  # count a survey done at ~360 deg (allow slight under)
 SURVEY_MAX_S = 15.0        # hard cap: give up the survey after this long so a rover that
                            # isn't physically rotating can't spin-command forever (it falls
@@ -165,9 +171,11 @@ class Navigator:
             # some ground since the last survey. So it drives a direction as far as the path
             # goes, then spins to check for other paths before choosing the next one.
             at_decision = not self.planner.current_path() or self.planner.finished()
-            # Only survey at an OPEN junction — never spin a 360 while blocked ahead (a wall /
-            # corridor side/end); there, fall through to explore so recovery turns it out.
-            if (not self._surveying and at_decision and not self._blocked_ahead()
+            # Survey only when something's actually ahead to assess (a junction/end,
+            # FWD_CLEAR..SURVEY_AHEAD m off) — NOT when blocked (recovery turns out) and NOT on
+            # a wide-open straight: there, commit and keep driving down it instead of spinning.
+            fwd = self._forward_clear()
+            if (not self._surveying and at_decision and FWD_CLEAR_M <= fwd < SURVEY_AHEAD_M
                     and self._dist_since_survey >= SURVEY_MIN_GAP_M):
                 self._begin_survey(pose)
             if self._surveying:
@@ -244,22 +252,33 @@ class Navigator:
         return DriveCommand(v, w, 0)
 
     def _corridor_center(self, cmd):
-        """In a corridor, steer to balance left vs right wall clearance — keeps the rover
-        parallel and centred so it drives to the END instead of veering into a side wall when
-        it enters at an angle. Uses the outer FOV rays (they graze the side walls). No-op in
-        open space (both sides far) so it doesn't fight the goal-seeker."""
+        """Keep the rover aimed down a corridor so it drives to the END instead of veering into
+        a side wall when it enters at an angle.
+
+        The phone's depth wedge is only ~+/-27 deg, so it CANNOT see the perpendicular side
+        walls (those sit at +/-90 deg) — true lateral centering off the walls is impossible
+        with this sensor. What it CAN see: when the rover is angled toward a wall, the
+        forward-edge rays on that side go short while the other side stays open. We balance the
+        two outer halves to correct that heading. Crucially the 'open/no-return' sentinel counts
+        as max range here (an open side) — so a wall-on-one-side / open-on-the-other imbalance
+        steers us away from the wall. (The old version filtered the sentinel OUT, which left the
+        side bands empty in any real corridor and made this a silent no-op.)"""
         if cmd is None or cmd.stop or cmd.linear_velocity <= 1e-3 or not self._last_scan:
             return cmd
-        left = [r for a, r in self._last_scan if a > CENTER_SIDE_RAD and 0 < r < NO_RETURN_M]
-        right = [r for a, r in self._last_scan if a < -CENTER_SIDE_RAD and 0 < r < NO_RETURN_M]
+        # outer rays; treat the open sentinel as max range so one-sided walls register.
+        left = [min(r, NO_RETURN_M) for a, r in self._last_scan if a > CENTER_SIDE_RAD and r > 0]
+        right = [min(r, NO_RETURN_M) for a, r in self._last_scan if a < -CENTER_SIDE_RAD and r > 0]
         if not left or not right:
             return cmd
         lc, rc = min(left), min(right)
-        if lc > CORRIDOR_DIST_M and rc > CORRIDOR_DIST_M:
-            return cmd  # open both sides — not a corridor
-        # steer toward the more-open side, away from the nearer wall (+w = left/CCW)
-        w = cmd.angular_velocity + CENTER_GAIN * (lc - rc)
-        w = max(-AVOID_W, min(AVOID_W, w))
+        if lc >= CORRIDOR_DIST_M and rc >= CORRIDOR_DIST_M:
+            return cmd  # nothing close either side — open space, leave the goal-seeker alone
+        if abs(lc - rc) < CENTER_DEADBAND_M:
+            return cmd  # roughly level — don't chatter
+        # gentle steer toward the more-open side, away from the nearer wall (+w = left/CCW),
+        # capped so it's a small correction, not a sharp swing.
+        correction = max(-CENTER_W_MAX, min(CENTER_W_MAX, CENTER_GAIN * (lc - rc)))
+        w = max(-AVOID_W, min(AVOID_W, cmd.angular_velocity + correction))
         return DriveCommand(cmd.linear_velocity, w, cmd.stop)
 
     def _boxed(self) -> bool:
