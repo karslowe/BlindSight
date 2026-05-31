@@ -1,18 +1,25 @@
-"""Recon Rover - navigation orchestrator.
+"""Recon Rover - navigation orchestrator (the rover's brain).
 
-Wires the stubbed modules into the run loop described in docs/architecture.md. This file
-defines the *shape* of the mission so the team can fill in each module against a stable
-interface. It does not implement the hard algorithms.
+The real autonomous run loop that runs on the UNO Q. Per tick:
+  1. Get the latest Pose from the phone (slam_frontend wraps Record3D: camera + LiDAR + IMU
+     fused on-device - no separate camera/IMU reads needed).
+  2. Project the phone's depth into a 2D obstacle scan and fuse it into the occupancy grid
+     (plus the side ToFs once their Modulino driver is present).
+  3. Broadcast the live MapUpdate (grid + pose + route) to phones on the rover's Wi-Fi.
+  4. Decide: drive toward the nearest frontier (autonomous exploration), or - once the space
+     is explored / on the phone's "return" button / on the battery failsafe - plan a direct
+     A* route home and follow it.
+  5. Send the resulting DriveCommand to the car MCU over serial (car_link).
 
-Run loop, per tick:
-  1. Read one IMU sample (modulino_io) and one camera frame.
-  2. slam.process(frame, imu) -> Pose.
-  3. mapping.update(pose, range_reading) folds range data into the occupancy grid.
-  4. While teleoperating, forward the human DriveCommand to the car (car_link).
-  5. On the return command, planning.plan(grid, start, pose) -> return_path, then follow it.
-  6. server broadcasts a MapUpdate (grid + pose + path) to connected phones.
+Sensing is phone LiDAR (primary) + side ToFs; the ultrasonic and line sensors were removed.
+The hard logic (grid, frontier explorer, A*, return planner) is implemented and headless-
+tested. Remaining hardware seams: the Modulino ToF driver and the bench motion calibration.
 
-This is a scaffold: every call below lands in a stub with a TODO.
+Run it (Mac, with the phone streaming over Record3D + the fake car for the serial link):
+  cd navigation && source venv/bin/activate
+  python bridge/fake_car.py                 # shell 1: note the printed PTY path
+  CAR_PORT=<that-path> python main.py        # shell 2: then open http://localhost:8000/?live
+  # Omit CAR_PORT to run the brain phone-only (it maps + plans, just sends no DriveCommands).
 """
 
 from __future__ import annotations
@@ -77,20 +84,24 @@ class Orchestrator:
     objects between modules. All real work happens inside the modules.
     """
 
-    def __init__(self) -> None:
-        self.car = CarLink()
-        self.imu = ModulinoIO()
+    def __init__(self, car_port: str | None = None) -> None:
+        # car_port: serial device for the car MCU, or the fake_car PTY path. If it is None or
+        # cannot be opened, the brain runs WITHOUT a car link (maps + plans, sends no commands)
+        # so it is still testable on the phone alone.
+        self.car = CarLink(port=car_port) if car_port else CarLink()
+        self._car_ok = False  # set True once the serial link opens
+        self.imu = ModulinoIO()  # side ToFs only; the phone supplies the IMU
         self.slam = SlamFrontend()
         self.grid = OccupancyGrid()
         self.planner = ReturnPlanner()
         self.explorer = FrontierExplorer()
-        self.detector = Detector()
+        self.detector = Detector()  # YOLO target detector; wired into tick() with the find-target tier
         self.server = MapServer()
         # The phone's "return home" button routes here, the same path as the failsafe.
         self.server.on_return_request = self.request_return
 
-        # Breadcrumb trail of poses recorded during teleop. The planner uses this as the
-        # reverse-path fallback when the grid is too sparse for A*.
+        # Breadcrumb trail of poses visited while exploring. The return planner uses it as the
+        # reverse-path fallback when the grid is too sparse for a direct A* route.
         self.driven_path: list[Pose] = []
         self.start_pose: Pose | None = None
         self.returning = False
@@ -98,15 +109,20 @@ class Orchestrator:
         self._explore_ticks = 0  # used to re-plan exploration periodically
 
     def setup(self) -> None:
-        """Open hardware links."""
-        self.car.connect()
+        """Open hardware links. The car and ToFs are OPTIONAL (the phone alone can drive the
+        map + planning); only the phone stream is required."""
+        try:
+            self.car.connect()
+            self._car_ok = True
+        except Exception as e:  # no port / fake car not started / pyserial missing
+            print(f"[setup] no car link ({e}); brain runs phone-only, sending no DriveCommands")
         # Modulino ToF (side coverage) is OPTIONAL: the phone supplies pose + depth + IMU, so
         # the rover still runs phone-only if the ToF driver is not implemented/connected yet.
         try:
             self.imu.connect()
         except NotImplementedError:
-            print("[setup] modulino ToF driver not implemented; running phone-only")
-        self.slam.connect()  # open the phone (Record3D) perception stream
+            print("[setup] modulino ToF driver not implemented; side ToFs disabled")
+        self.slam.connect()  # open the phone (Record3D) perception stream - REQUIRED
         self.server.run_in_thread()  # serve the viz + open the map websocket for phones
         self.mission_start = time.time()  # start the battery-time failsafe clock
 
@@ -121,7 +137,8 @@ class Orchestrator:
             self.start_pose = pose  # remember where "home" is
 
         # Mapping: assemble ONE scan (rover-frame rays) from phone depth (primary) + side ToFs.
-        self.car.read_telemetry()  # drain the link / heartbeat (bumper available if needed)
+        if self._car_ok:
+            self.car.read_telemetry()  # drain the link / heartbeat (bumper available if needed)
         scan: list[tuple[float, float]] = []
         # PRIMARY sensing: the phone's full depth image projected (6-DoF) and sliced into a
         # 2D obstacle scan. This is what fills the map as the rover drives.
@@ -135,8 +152,8 @@ class Orchestrator:
         if scan:
             self.grid.update(pose, scan)
 
-        # 6. Broadcast the live map. The route home goes in return_path ONLY while
-        #    returning (empty while exploring), so the viewer can tell the two apart.
+        # Broadcast the live map. The route home goes in return_path ONLY while returning
+        # (empty while exploring), so the viewer can tell the two apart.
         return_path = self.planner.current_path() if self.returning else []
         home = {"x": self.start_pose.x, "y": self.start_pose.y} if self.start_pose else None
         self.server.publish(self.grid.to_map_update(pose, return_path, start=home))
@@ -151,13 +168,13 @@ class Orchestrator:
             print(f"[failsafe] {FAILSAFE_RETURN_S}s battery-time budget reached; returning home")
             self.request_return()
 
-        # 4 / 5. Autonomous behavior: explore the unknown, then drive home.
+        # Autonomous behavior: explore the unknown, then drive home.
         if self.returning:
             cmd = self.planner.next_command(pose)
         else:
             self.driven_path.append(pose)
             cmd = self.autonomous_explore(pose)
-        if cmd is not None:
+        if cmd is not None and self._car_ok:
             self.car.send_drive(cmd)
 
     def autonomous_explore(self, pose: Pose) -> DriveCommand | None:
@@ -194,9 +211,22 @@ class Orchestrator:
                 self.tick()
                 time.sleep(period)
         except KeyboardInterrupt:
-            self.car.send_drive(DriveCommand(0.0, 0.0, stop=1))
+            if self._car_ok:
+                self.car.send_drive(DriveCommand(0.0, 0.0, stop=1))  # brake on the way out
             print("stopped")
 
 
 if __name__ == "__main__":
-    Orchestrator().run()
+    import argparse
+    import os
+
+    ap = argparse.ArgumentParser(description="Recon Rover navigation brain")
+    ap.add_argument(
+        "--car-port",
+        default=os.environ.get("CAR_PORT"),
+        help="serial device / fake_car PTY for the car MCU (or set CAR_PORT). "
+             "Omit to run the brain phone-only.",
+    )
+    ap.add_argument("--hz", type=float, default=20.0, help="control loop rate (default 20)")
+    args = ap.parse_args()
+    Orchestrator(car_port=args.car_port).run(hz=args.hz)
