@@ -41,12 +41,13 @@ from mapping.occupancy_grid import OccupancyGrid  # noqa: E402
 from perception.pointcloud import depth_to_points  # noqa: E402
 
 # Sub-sample + range band for back-projection (fewer points = less bandwidth, smoother viz).
-STRIDE = 8
+# Lower stride = denser cloud (looks more like a continuous surface), more bandwidth/compute.
+STRIDE = 4
 MIN_RANGE_M = 0.2
 MAX_RANGE_M = 4.0
 # Accumulation: dedup points onto a voxel grid so revisiting a spot does not pile up points.
-VOXEL_M = 0.04
-MAX_POINTS = 120000  # cap the accumulated cloud (the viewer also caps what it draws)
+VOXEL_M = 0.03  # finer dedup -> denser surfaces (was 0.04)
+MAX_POINTS = 50000  # cap the accumulated cloud; matches the viewer's POINT_CAP
 
 
 def _accumulate(cloud: dict, pts: list) -> None:

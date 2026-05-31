@@ -62,13 +62,13 @@ scene.add(wallMesh);
 // Point cloud (Flavor B): the real depth-derived 3D points. Fixed-capacity buffers updated
 // in place each frame; colored by height. Shown when MapUpdate.point_cloud is non-empty,
 // in which case the extruded walls are hidden.
-const POINT_CAP = 14000;
+const POINT_CAP = 50000;
 const ptPositions = new Float32Array(POINT_CAP * 3);
 const ptColors = new Float32Array(POINT_CAP * 3);
 const ptGeo = new THREE.BufferGeometry();
 ptGeo.setAttribute("position", new THREE.BufferAttribute(ptPositions, 3));
 ptGeo.setAttribute("color", new THREE.BufferAttribute(ptColors, 3));
-const points = new THREE.Points(ptGeo, new THREE.PointsMaterial({ size: 0.03, vertexColors: true }));
+const points = new THREE.Points(ptGeo, new THREE.PointsMaterial({ size: 0.045, vertexColors: true }));
 points.visible = false;
 scene.add(points);
 const _col = new THREE.Color();
