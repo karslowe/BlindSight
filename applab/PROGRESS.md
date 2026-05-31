@@ -16,10 +16,11 @@ it, and the container doesn't get the iPhone's USB node. So we split (Branch B):
 
 ```
 iPhone ──USB──> HOST: ~/lidar_feed.py            APP LAB CONTAINER: edge/python/main.py
-                 record3d capture                  pulls /data over docker gateway
-                 depth → PNG feed   :8008          OccupancyGrid mapping
-                 pose + scan        /data   ─────> renders top-down map        :8000
-                 (systemd user service)            (pure stdlib + numpy wheel)
+                 record3d capture                  pulls /data over docker bridge
+                 depth → PNG feed   :8008          OccupancyGrid + explore/return autonomy
+                 pose + scan        /data   ─────> MapUpdate JSON + real viewer   :8000
+                 (user service, bound to            (browser renders the map; drive → car
+                  docker bridges only)               over the App Lab Bridge)
 ```
 
 ## Done & validated
@@ -34,10 +35,13 @@ iPhone ──USB──> HOST: ~/lidar_feed.py            APP LAB CONTAINER: edge
 | Auto-start | ✅* | systemd **user** service `lidar-feed`; *needs `sudo loginctl enable-linger arduino` once |
 | App Lab relay (step 2) | ✅ | pure-stdlib proxy, reachable via bridge gateway |
 | Brain: pose + scan at `/data` | ✅ | live values sane (90 rays, 0.33–4 m, stable pose) |
-| Brain: OccupancyGrid map on :8000 | ✅ | 30 folds/5 s on live data → grid grew to 75×102 |
+| Brain: OccupancyGrid mapping | ✅ | 30 folds/5 s on live data → grid grew to 75×102 |
 | Autonomy: explore + return-home | ✅ | closed-loop sim: explore → no frontiers → return → home @0.05 m |
-| Car Bridge (Python side) | ✅ | `Bridge.call("drive",…)` + `Bridge.provide("car_telemetry",…)`; API confirmed vs Arduino examples |
-| Car Bridge (sketch.ino) | ⚠️ | written (Bridge + diff-drive + watchdog); **motor/sensor pins TODO, not compiled/bench-tested** |
+| Map rendered CLIENT-SIDE | ✅ | brain serves MapUpdate JSON at `/mapupdate`; real `visualization/` viewer renders it (no server raster) |
+| Car Bridge (Python) | ✅ | `Bridge.call("drive",…)`; API confirmed vs Arduino examples |
+| Car Bridge (sketch.ino) | ⚠️ | drive-only, real V4 pins (single dir-pin/motor) + watchdog; **needs compile + bench pass** |
+| Ultrasonic | ❌ removed | no time to level-shift 5 V→3.3 V; sketch→brain telemetry dropped with it |
+| Host-feed LAN lockdown | ✅ | `lidar_feed.py` binds docker bridges only (172.x); LAN IP refuses (verified) |
 
 ## Pending
 
@@ -52,25 +56,27 @@ iPhone ──USB──> HOST: ~/lidar_feed.py            APP LAB CONTAINER: edge
    Deploy via the App Lab GUI or `arduino-app-cli app start user:edge`. ⚠️ This flashes the
    sketch and lets the brain command motors over the Bridge — **put the car on blocks** until
    geometry + pins are verified. The map will build (possibly mis-oriented pre-calibration).
-2. **Car Bridge — bench verification (sketch side).** ✅ DONE in code (Python both directions;
-   `sketch/sketch.ino` has the Bridge wiring + differential-drive + watchdog). REMAINING: fill
-   the real motor/sensor pins (UNO Q → Elegoo TB6612 + HC-SR04), compile, and confirm a "drive"
-   command actually moves the wheels and telemetry arrives. Diff-drive math from `~/BlindSight/
-   car-firmware`.
-3. **Planning / autonomy.** ✅ DONE + validated (closed-loop sim). Lives in `python/navigator.py`
-   (explore + return-home + A*); map renders the planned path + pose trail; "Return home" button
-   on the :8000 page + `POST /return`.
-4. **Full interactive viewer.** Swap the rendered PNG for `navigation/visualization` (real map
-   UI). Needs a polling or websocket adapter in the container.
-5. **Calibration prep.** Add a record/replay of `/data` to a file so mount-day calibration is
-   instant.
+2. **Car Bridge — bench pass (sketch).** ✅ Code done (Python `Bridge.call("drive",…)`;
+   `sketch/sketch.ino` is drive-only with the real Elegoo V4 pins from `car-firmware` —
+   single direction pin per motor — + watchdog). REMAINING: compile/flash and confirm a
+   `drive` command spins the wheels the right way (flip `*_INVERT`/`SWAP`). TB6612 logic is
+   fine at 3.3 V.
+3. **Planning / autonomy.** ✅ DONE + validated (closed-loop sim). `python/navigator.py`
+   (explore + return-home + A*); "Return home" button on :8000 + `POST /return`.
+4. **Full interactive viewer.** ✅ DONE — serves the real `navigation/visualization` viewer;
+   transport swapped from websocket to polling `/mapupdate` (`src/ws_client.js`), rendering
+   is client-side.
+5. **Calibration prep.** Add a record/replay of `/data` so mount-day calibration is instant.
 6. **Side ToF sensors.** Implement `navigation/bridge/modulino_io.py` `connect()`/`read` (3×
    Modulino Distance over Qwiic/I2C) — currently a `NotImplementedError` stub. Needs hardware.
 
 ## Ops notes
 - Host feed: `systemctl --user {status,restart} lidar-feed` · logs `journalctl --user -u lidar-feed -f`.
-- For cold-boot-without-login, run once: `sudo loginctl enable-linger arduino`.
-- Host feed binds `0.0.0.0:8008` (reachable on the LAN directly, not only via App Lab). Can be
-  locked to the docker bridge only if desired.
-- App Lab brain: open `http://192.168.137.252:8000` after deploy. Override host URL with env
-  `BLINDSIGHT_FEED_URL` if the bridge gateway differs.
+- **Run once for cold-boot survival:** `sudo loginctl enable-linger arduino` (can't be done
+  from a no-password-sudo shell — the single most likely demo-day failure if skipped).
+- Host feed `:8008` binds the docker bridges only (locked off the LAN). The brain `:8000` binds
+  `0.0.0.0` *inside the container* (container-internal; App Lab maps it to the host for the demo
+  UI — intended). Override the feed host with env `BLINDSIGHT_FEED_URL` if needed.
+- Deploy: App Lab GUI Run or `arduino-app-cli app start user:edge`. ⚠️ flashes the MCU and lets
+  the brain command motors — **put the car on blocks** until geometry + sketch pins are verified.
+- View: `http://10.161.73.225:8000`.

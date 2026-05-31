@@ -31,7 +31,9 @@ script retries connection every few seconds, so hot-plugging after it starts is 
 
 from __future__ import annotations
 
+import os
 import struct
+import subprocess
 import threading
 import time
 import zlib
@@ -57,6 +59,33 @@ _state = {"capture": "starting", "frames": 0, "latest_depth": None, "frame_id": 
           "depth_shape": None, "pose": None, "scan": None}
 _png_cache = {"id": -1, "png": None}
 _png_cache_lock = threading.Lock()
+
+# ---- runtime pose calibration (TASK B) --------------------------------------------------
+# How the phone's ARKit pose maps to the rover ground frame. Set by calibration (manual
+# calibrate.py or the motor-driven routine) via POST /calib — no code edit / restart needed.
+# Persisted to CALIB_FILE so it survives a reboot. Defaults reproduce the original mapping
+# (x = +tz forward, y = +tx left, theta = +yaw, scan angle unflipped).
+import json as _json
+from pathlib import Path as _Path
+CALIB_FILE = _Path.home() / "blindsight_calib.json"
+_calib_lock = threading.Lock()
+_calib = {"fwd": "tz", "fwd_sign": 1, "lat": "tx", "lat_sign": 1, "yaw_sign": 1, "scan_sign": 1}
+
+
+def _load_calib() -> None:
+    try:
+        with _calib_lock:
+            _calib.update(_json.loads(CALIB_FILE.read_text()))
+        print(f"[lidar] loaded calibration from {CALIB_FILE}: {_calib}", flush=True)
+    except FileNotFoundError:
+        print("[lidar] no calibration file yet — using identity defaults", flush=True)
+    except Exception as e:  # noqa: BLE001
+        print(f"[lidar] bad calibration file ({e}); using defaults", flush=True)
+
+
+def _save_calib() -> None:
+    with _calib_lock:
+        CALIB_FILE.write_text(_json.dumps(_calib, indent=2))
 
 
 # ----------------------------------------------------------- stdlib grayscale PNG -----
@@ -116,7 +145,14 @@ def _pose_from_camera(cam, ts: float) -> dict:
     """
     qx, qy, qz, qw = cam.qx, cam.qy, cam.qz, cam.qw
     yaw = math.atan2(2.0 * (qw * qy + qz * qx), 1.0 - 2.0 * (qy * qy + qx * qx))
-    return {"x": float(cam.tz), "y": float(cam.tx), "theta": float(yaw), "timestamp": ts}
+    raw = {"tx": float(cam.tx), "ty": float(cam.ty), "tz": float(cam.tz),
+           "qx": float(qx), "qy": float(qy), "qz": float(qz), "qw": float(qw)}
+    # Apply the runtime calibration (POST /calib sets it). raw is carried through so the
+    # calibration routine can recompute the mapping from real moves.
+    with _calib_lock:
+        c = dict(_calib)
+    return {"x": c["fwd_sign"] * raw[c["fwd"]], "y": c["lat_sign"] * raw[c["lat"]],
+            "theta": c["yaw_sign"] * float(yaw), "timestamp": ts, "raw": raw}
 
 
 def _depth_to_scan(depth, intr) -> list:
@@ -140,9 +176,11 @@ def _depth_to_scan(depth, intr) -> list:
     band = np.where(np.isfinite(band) & (band > 0.05), band, np.inf)
     col_min = band.min(axis=0)  # nearest obstacle per column
     cols = np.linspace(0, w - 1, SCAN_RAYS).astype(int)
+    with _calib_lock:
+        scan_sign = _calib["scan_sign"]  # +1 left-of-center=CCW; -1 if the depth is mirrored
     scan = []
     for u in cols:
-        ang = math.atan2(cx - u, fx)  # left of center -> positive (CCW)
+        ang = scan_sign * math.atan2(cx - u, fx)  # left of center -> positive (CCW) by default
         z = col_min[u]
         rng = DEPTH_MAX_M if not np.isfinite(z) else min(float(z) / max(math.cos(ang), 1e-3), DEPTH_MAX_M)
         scan.append([round(ang, 5), round(rng, 4)])
@@ -262,15 +300,72 @@ class _Handler(BaseHTTPRequestHandler):
                 s = {"frames": _state["frames"], "frame_id": _state["frame_id"],
                      "pose": _state["pose"], "scan": _state["scan"]}
             self._send(200, "application/json", json.dumps(s).encode())
+        elif path == "/calib":
+            with _calib_lock:
+                self._send(200, "application/json", _json.dumps(_calib).encode())
         else:
             self._send(200, "text/html; charset=utf-8", _PAGE.encode())
 
+    def do_POST(self):
+        # POST /calib {fwd,fwd_sign,lat,lat_sign,yaw_sign,scan_sign} — set + persist the pose
+        # calibration at runtime (manual calibrate.py or the motor-driven routine post here).
+        if self.path.split("?", 1)[0] == "/calib":
+            try:
+                n = int(self.headers.get("Content-Length", 0))
+                body = _json.loads(self.rfile.read(n).decode()) if n else {}
+                allowed = {"fwd", "fwd_sign", "lat", "lat_sign", "yaw_sign", "scan_sign"}
+                with _calib_lock:
+                    _calib.update({k: body[k] for k in body if k in allowed})
+                    snap = dict(_calib)
+                _save_calib()
+                print(f"[lidar] calibration updated: {snap}", flush=True)
+                self._send(200, "application/json", _json.dumps(snap).encode())
+            except Exception as e:  # noqa: BLE001
+                self._send(400, "text/plain", f"bad calib: {e}".encode())
+        else:
+            self._send(404, "text/plain", b"not found")
+
+
+def _bind_addrs() -> "list[str]":
+    """Where to serve. This feed is consumed ONLY by the App Lab container (over the docker
+    bridge), so bind to the docker bridge gateway IPs (172.x) and NOT the LAN (wlan0) — that
+    keeps the raw depth/pose off the venue network. Override with LIDAR_BIND (e.g. 0.0.0.0).
+    Falls back to 0.0.0.0 only if no bridge is found, so it never silently goes dark."""
+    forced = os.environ.get("LIDAR_BIND")
+    if forced:
+        return [forced]
+    ips = []
+    try:
+        import re
+        out = subprocess.check_output(["ip", "-o", "-4", "addr", "show"], text=True)
+        for line in out.splitlines():
+            m = re.search(r"inet (\d+\.\d+\.\d+\.\d+)", line)
+            if m and m.group(1).startswith("172."):  # docker/bridge range, not the LAN
+                ips.append(m.group(1))
+    except Exception:  # noqa: BLE001
+        pass
+    return ips or ["0.0.0.0"]
+
 
 def main() -> None:
+    _load_calib()
     threading.Thread(target=_capture_loop, name="lidar-capture", daemon=True).start()
-    print(f"[lidar] serving feed on http://0.0.0.0:{PORT}  (open http://<board-ip>:{PORT})", flush=True)
+    addrs = _bind_addrs()
+    # Serve on every chosen address (one ThreadingHTTPServer per bind) so the container
+    # reaches us via its bridge gateway regardless of which docker bridge App Lab uses.
+    servers = []
+    for addr in addrs:
+        try:
+            servers.append(ThreadingHTTPServer((addr, PORT), _Handler))
+            print(f"[lidar] serving feed on http://{addr}:{PORT}", flush=True)
+        except OSError as e:
+            print(f"[lidar] could not bind {addr}:{PORT} — {e}", flush=True)
+    if not servers:
+        return
+    for s in servers[1:]:
+        threading.Thread(target=s.serve_forever, daemon=True).start()
     try:
-        ThreadingHTTPServer(("0.0.0.0", PORT), _Handler).serve_forever()
+        servers[0].serve_forever()
     except KeyboardInterrupt:
         print("\n[lidar] stopped")
 

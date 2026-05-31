@@ -7,19 +7,23 @@ at /data: 2D camera pose + a horizontal depth scan. THIS app is the brain:
   * folds (pose, scan) into the real OccupancyGrid (navigation/mapping),
   * runs autonomous frontier exploration + return-home planning (navigation/planning),
   * computes DriveCommands (sent to the car over the App Lab Bridge by the sketch side),
-  * serves a live top-down map with the planned path + pose trail on :8000.
+  * serves the live occupancy map on :8000 — RENDERED CLIENT-SIDE by the real browser viewer
+    (navigation/visualization). The brain only ships MapUpdate JSON at /mapupdate; the
+    Dragonwing does no map rasterization (that was a deliberate fix — keep render off the brain).
 
 Deps: numpy only (prebuilt aarch64 wheel; never PIN it — see requirements.txt). The mapping,
-planning, and schema modules are vendored under python/ already; we just put them on sys.path.
+planning, schema, and visualization assets are vendored under python/ already.
 
 Drive output: the latest DriveCommand is published to the MCU via Bridge.call("drive", ...)
-when the App Lab Bridge is available. Without the Bridge (e.g. running the logic standalone)
-the command is still computed and shown in /status, so the planner is testable with no car.
+when the App Lab Bridge is available. (No telemetry comes back: the ultrasonic was removed —
+no time to level-shift its 5 V echo — and nothing else on the car feeds the brain.)
 """
 
 from __future__ import annotations
 
 import json
+import math
+import mimetypes
 import os
 import socket
 import struct
@@ -27,7 +31,7 @@ import subprocess
 import sys
 import threading
 import time
-import zlib
+import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
@@ -36,9 +40,9 @@ from arduino.app_utils import App
 PORT = 8000
 FEED_PORT = 8008
 FETCH_TIMEOUT = 2.0
-CELL_PX = 4                       # display upscale: each grid cell -> CELL_PX px
 
 HERE = Path(__file__).resolve().parent
+VIZ = HERE / "visualization"
 for _p in (HERE / "navigation", HERE / "shared"):
     if str(_p) not in sys.path:
         sys.path.insert(0, str(_p))
@@ -55,7 +59,6 @@ def _ensure_numpy() -> None:
 
 
 _ensure_numpy()
-import numpy as np  # noqa: E402
 from schemas.schemas import Pose  # noqa: E402
 from navigator import Navigator  # noqa: E402  (autonomy core; sets up navigation/shared paths)
 
@@ -66,11 +69,14 @@ try:
 except Exception:  # noqa: BLE001
     _BRIDGE = False
 
-_lock = threading.Lock()
-_state = {"brain": "starting", "upstream": "unknown", "folds": 0, "map_png": None,
-          "grid_wh": None, "mode": "explore", "cmd": None, "base": None}
+_lock = threading.Lock()        # guards _state (status fields)
+_nav_lock = threading.Lock()    # guards the grid/planner (brain writes, /mapupdate reads)
+_state = {"brain": "starting", "upstream": "unknown", "folds": 0,
+          "grid_wh": None, "mode": "explore", "cmd": None, "base": None, "drive": "—",
+          "calib": "idle"}
 
 _nav = Navigator()
+_last_pose = None  # most recent Pose (for building MapUpdate); guarded by _nav_lock
 
 
 # ============================================================ host-feed discovery ====
@@ -117,123 +123,181 @@ def _find_base() -> "str | None":
     return None
 
 
-# ============================================================ rendering ==============
-def _png_gray(img) -> bytes:
-    img = np.ascontiguousarray(img, dtype=np.uint8)
-    h, w = img.shape
-    filtered = np.empty((h, w + 1), dtype=np.uint8)
-    filtered[:, 0] = 0
-    filtered[:, 1:] = img
-
-    def chunk(typ, payload):
-        body = typ + payload
-        return struct.pack(">I", len(payload)) + body + struct.pack(">I", zlib.crc32(body) & 0xFFFFFFFF)
-
-    return (b"\x89PNG\r\n\x1a\n"
-            + chunk(b"IHDR", struct.pack(">IIBBBBB", w, h, 8, 0, 0, 0, 0))
-            + chunk(b"IDAT", zlib.compress(filtered.tobytes(), 1)) + chunk(b"IEND", b""))
-
-
-def _line(img, c0, r0, c1, r1, val):
-    """Rasterize a cell-space line into img (Bresenham), bounds-checked."""
-    h, w = img.shape
-    dc, dr = abs(c1 - c0), abs(r1 - r0)
-    sc, sr = (1 if c0 < c1 else -1), (1 if r0 < r1 else -1)
-    err = dc - dr
-    c, r = c0, r0
-    while True:
-        if 0 <= r < h and 0 <= c < w:
-            img[r, c] = val
-        if c == c1 and r == r1:
-            break
-        e2 = 2 * err
-        if e2 > -dr:
-            err -= dr; c += sc
-        if e2 < dc:
-            err += dc; r += sr
-
-
-def _render() -> bytes:
-    """Top-down map: unknown=60 free=170 obstacle=10 trail=95 path=230 home=120 rover=255."""
-    g = _nav.grid
-    mu = g.to_map_update(_nav.driven_path[-1] if _nav.driven_path else _nav.start_pose
-                         or Pose(0, 0, 0, 0))
-    h, w = mu.height, mu.width
-    if h == 0 or w == 0:
-        return _png_gray(np.full((1, 1), 60, dtype=np.uint8))
-    cells = np.asarray(mu.cells, dtype=np.int16).reshape(h, w)
-    img = np.full((h, w), 60, dtype=np.uint8)
-    img[cells == 0] = 170
-    img[cells == 100] = 10
-
-    def cell(px, py):
-        return g.world_to_cell(px, py)
-
-    # pose trail (faint)
-    trail = _nav.driven_path
-    for i in range(1, len(trail)):
-        c0, r0 = cell(trail[i - 1].x, trail[i - 1].y)
-        c1, r1 = cell(trail[i].x, trail[i].y)
-        _line(img, c0, r0, c1, r1, 95)
-    # active planned path (frontier route while exploring, route home while returning)
-    path = _nav.planner.current_path()
-    for i in range(1, len(path)):
-        c0, r0 = cell(path[i - 1].x, path[i - 1].y)
-        c1, r1 = cell(path[i].x, path[i].y)
-        _line(img, c0, r0, c1, r1, 230)
-
-    def mark(px, py, val):
-        c, r = cell(px, py)
-        if 0 <= r < h and 0 <= c < w:
-            img[max(0, r - 1):r + 2, max(0, c - 1):c + 2] = val
-
-    if _nav.start_pose is not None:
-        mark(_nav.start_pose.x, _nav.start_pose.y, 120)
-    mark(mu.pose.x, mu.pose.y, 255)
-    img = np.flipud(img)  # row 0 is the bottom row
-    img = np.repeat(np.repeat(img, CELL_PX, axis=0), CELL_PX, axis=1)
-    return _png_gray(img)
-
-
-# ============================================================ car bridge =============
-# Latest telemetry from the sketch (forward ultrasonic etc.), folded into the scan.
-_telemetry = {"ultrasonic": None, "bumper": 0, "ts": 0.0}
-
-
-def _on_car_telemetry(ultrasonic, bumper, line_left, line_center, line_right, ts):
-    """Bridge handler: the sketch pushes CarTelemetry here via Bridge.notify('car_telemetry',...)."""
-    with _lock:
-        _telemetry.update(ultrasonic=float(ultrasonic), bumper=int(bumper), ts=float(ts))
-
-
-if _BRIDGE:
-    try:
-        Bridge.provide("car_telemetry", _on_car_telemetry)
-    except Exception:  # noqa: BLE001 - already registered / bridge not ready
-        pass
-
-
+# ============================================================ car bridge (drive only) =
 def _send_drive(cmd) -> None:
-    """Publish the DriveCommand to the MCU over the App Lab Bridge, if available."""
-    if cmd is None or not _BRIDGE:
+    """Publish the DriveCommand to the MCU over the App Lab Bridge, if available.
+
+    Records the outcome in _state["drive"] so /status shows whether Bridge.call is actually
+    reaching the MCU (vs silently failing) — the key signal when the wheels don't move."""
+    if _calibrating or _manual:  # calibration / manual drive-test owns the motors
+        return
+    if not _BRIDGE:
+        with _lock:
+            _state["drive"] = "no bridge"
+        return
+    if cmd is None:
         return
     try:
-        Bridge.call("drive", cmd.linear_velocity, cmd.angular_velocity, cmd.stop)
-    except Exception:  # noqa: BLE001 - sketch may not be up yet; don't kill the loop
+        Bridge.call("drive", float(cmd.linear_velocity), float(cmd.angular_velocity), int(cmd.stop))
+        with _lock:
+            _state["drive"] = "ok"
+    except Exception as e:  # noqa: BLE001 - report it instead of swallowing
+        with _lock:
+            _state["drive"] = f"ERR {type(e).__name__}: {e}"
+
+
+def _send_stop() -> None:
+    """Brake the motors (used every tick while disarmed, so the rover holds still)."""
+    if not _BRIDGE:
+        return
+    try:
+        Bridge.call("drive", 0.0, 0.0, 1)
+    except Exception:  # noqa: BLE001
         pass
 
 
-def _augment_scan(scan):
-    """Add the car's forward ultrasonic as a 0-rad ray (mirrors the orchestrator fallback)."""
-    with _lock:
-        u = _telemetry["ultrasonic"]
-    if u is not None and u >= 0:
-        return list(scan) + [(0.0, u)]
-    return scan
+# ===================================================== motor-driven calibration (TASK B)
+# Drives two known legs (forward, then turn-left), reads the raw ARKit pose deltas off the
+# feed's /data, computes the pose→rover axis mapping, and POSTs it to the feed's /calib (which
+# applies + persists it). Re-runnable any time via POST /calibrate. REQUIRES the wheels to
+# actually move — until the drive path is fixed this will report "no motion detected".
+_calibrating = False
+_manual = False                       # a manual /drive test owns the motors while True
+_armed = False                        # autonomy drives ONLY when armed (default: idle/safe)
+CAL_FWD_V, CAL_FWD_S = 0.15, 3.0      # forward leg: ~0.15 m/s for 3 s
+CAL_TURN_W, CAL_TURN_S = 0.6, 3.0     # turn leg: ~0.6 rad/s CCW (left) for 3 s
+CAL_MIN_FWD_M = 0.05                  # need at least this much translation to trust the axis
+
+
+def _raw_yaw(r) -> float:
+    qx, qy, qz, qw = r["qx"], r["qy"], r["qz"], r["qw"]
+    return math.atan2(2 * (qw * qy + qz * qx), 1 - 2 * (qy * qy + qx * qx))
+
+
+def _capture_raw(base: str, n: int = 10):
+    """Average n raw poses off /data (uncalibrated tx/ty/tz + yaw). None if no frames."""
+    import statistics
+    acc = {"tx": [], "ty": [], "tz": [], "yaw": []}
+    for _ in range(n * 3):
+        if len(acc["tx"]) >= n:
+            break
+        try:
+            p = json.loads(_get(f"{base}/data").decode()).get("pose")
+            if p and p.get("raw"):
+                r = p["raw"]
+                acc["tx"].append(r["tx"]); acc["ty"].append(r["ty"]); acc["tz"].append(r["tz"])
+                acc["yaw"].append(_raw_yaw(r))
+        except Exception:  # noqa: BLE001
+            pass
+        time.sleep(0.05)
+    if len(acc["tx"]) < 3:
+        return None
+    return {k: statistics.fmean(v) for k, v in acc.items()}
+
+
+def _drive_for(v: float, w: float, secs: float) -> None:
+    """Hold a velocity for `secs` (re-sent each 100 ms to satisfy the MCU watchdog), then stop."""
+    end = time.time() + secs
+    while time.time() < end:
+        try:
+            Bridge.call("drive", float(v), float(w), 0)
+        except Exception:  # noqa: BLE001
+            pass
+        time.sleep(0.1)
+    try:
+        Bridge.call("drive", 0.0, 0.0, 1)
+    except Exception:  # noqa: BLE001
+        pass
+
+
+def _wrap(a: float) -> float:
+    while a > math.pi:
+        a -= 2 * math.pi
+    while a < -math.pi:
+        a += 2 * math.pi
+    return a
+
+
+def _run_calibration() -> None:
+    """Drive forward + turn, measure raw-pose deltas, POST the computed mapping to /calib."""
+    global _calibrating
+    _calibrating = True
+
+    def setc(s):
+        with _lock:
+            _state["calib"] = s
+
+    try:
+        if not _BRIDGE:
+            setc("no bridge — can't drive"); return
+        base = _state.get("base") or _find_base()
+        if not base:
+            setc("feed not reachable"); return
+        setc("capturing start pose"); a = _capture_raw(base)
+        if not a:
+            setc("no pose (is the phone streaming?)"); return
+        setc("driving forward..."); _drive_for(CAL_FWD_V, 0.0, CAL_FWD_S); time.sleep(0.4)
+        b = _capture_raw(base)
+        setc("turning left..."); _drive_for(0.0, CAL_TURN_W, CAL_TURN_S); time.sleep(0.4)
+        c = _capture_raw(base)
+        if not b or not c:
+            setc("lost pose mid-calibration"); return
+        # ARKit world is gravity-aligned (Y up), so forward is the horizontal axis (tx/tz)
+        # that moved most during the forward leg; the other horizontal axis is lateral.
+        dtx, dtz = b["tx"] - a["tx"], b["tz"] - a["tz"]
+        if max(abs(dtx), abs(dtz)) < CAL_MIN_FWD_M:
+            setc(f"no motion detected (Δtx={dtx:+.3f} Δtz={dtz:+.3f}) — wheels not moving?"); return
+        fwd = "tx" if abs(dtx) > abs(dtz) else "tz"
+        lat = "tz" if fwd == "tx" else "tx"
+        fwd_sign = 1 if (b[fwd] - a[fwd]) >= 0 else -1
+        dyaw = _wrap(c["yaw"] - a["yaw"])  # commanded CCW(left); want derived theta to rise
+        yaw_sign = 1 if dyaw >= 0 else -1
+        calib = {"fwd": fwd, "fwd_sign": fwd_sign, "lat": lat, "lat_sign": 1, "yaw_sign": yaw_sign}
+        req = urllib.request.Request(f"{base}/calib", data=json.dumps(calib).encode(),
+                                     method="POST", headers={"Content-Type": "application/json"})
+        urllib.request.urlopen(req, timeout=3).read()
+        setc(f"done: {calib} | Δfwd={b[fwd]-a[fwd]:+.2f} m, Δyaw={dyaw:+.2f} rad "
+             f"(if walls land mirrored, POST scan_sign:-1)")
+    except Exception as e:  # noqa: BLE001
+        setc(f"error: {e}")
+    finally:
+        _calibrating = False
+
+
+def _manual_drive(v: float, w: float, secs: float) -> None:
+    """Bench wiring test: drive (v, w) for `secs` then brake — independent of the phone/brain.
+    Lets you confirm a `drive` command actually spins the wheels with nothing else running."""
+    global _manual
+    _manual = True
+    try:
+        with _lock:
+            _state["calib"] = f"manual drive v={v} w={w} for {secs}s"
+        _drive_for(v, w, secs)
+        with _lock:
+            _state["calib"] = "manual drive done"
+    finally:
+        _manual = False
+
+
+# ============================================================ map payload =============
+def _map_update_json() -> "bytes | None":
+    """Serialize the current grid as a MapUpdate (the real browser viewer renders it).
+
+    return_path is populated only while returning (matches the viewer's convention); start
+    is the mission home. Reads the grid under _nav_lock so it never races the brain thread.
+    """
+    with _nav_lock:
+        if _last_pose is None or _nav.grid.width == 0:
+            return None
+        path = _nav.planner.current_path() if _nav.returning else []
+        home = None if _nav.start_pose is None else {"x": _nav.start_pose.x, "y": _nav.start_pose.y}
+        mu = _nav.grid.to_map_update(_last_pose, return_path=path, start=home)
+    return json.dumps(mu.to_dict()).encode()
 
 
 # ============================================================ brain loop ==============
 def _brain_loop() -> None:
+    global _last_pose
     base = None
     last_fid = -1
     while True:
@@ -258,11 +322,19 @@ def _brain_loop() -> None:
                 last_fid = fid
                 pose = Pose(x=pose_d["x"], y=pose_d["y"], theta=pose_d["theta"],
                             timestamp=pose_d.get("timestamp", time.time()))
-                cmd = _nav.step(pose, _augment_scan([(a, r) for a, r in scan]))
-                _send_drive(cmd)
-                png = _render()
+                with _nav_lock:
+                    cmd = _nav.step(pose, [(a, r) for a, r in scan])
+                    _last_pose = pose
+                # SAFETY: only drive when explicitly armed. Disarmed = keep mapping but hold
+                # the brakes — so the rover never auto-drives (e.g. into a wall) on startup or
+                # before calibration. Calibration owns the motors separately while it runs.
+                if _calibrating or _manual:
+                    pass
+                elif _armed:
+                    _send_drive(cmd)
+                else:
+                    _send_stop()
                 with _lock:
-                    _state["map_png"] = png
                     _state["folds"] += 1
                     _state["grid_wh"] = [_nav.grid.width, _nav.grid.height]
                     _state["mode"] = "return" if _nav.returning else "explore"
@@ -278,24 +350,19 @@ def _brain_loop() -> None:
             time.sleep(1)
 
 
-# ============================================================ web =====================
-_PAGE = """<!doctype html><meta charset=utf-8><title>BlindSight map (App Lab)</title>
-<body style="margin:0;background:#11151c;color:#ecf0f1;font-family:system-ui;text-align:center">
-<h1 style="margin:12px">Live occupancy map + autonomy — App Lab</h1>
-<img id=f style="max-width:96vw;max-height:62vh;image-rendering:pixelated;background:#000;border:1px solid #333">
-<div style="margin:8px"><button id=ret style="min-height:44px;padding:0 22px;font-weight:700;border:0;border-radius:10px;background:#2d6cdf;color:#fff">Return home</button></div>
-<p id=cap style="color:#95a5a6"></p>
-<p style="color:#7f8c8d;font-size:12px">white=rover · yellow-line=plan · faint=trail · light=free · dark=obstacle · gray=unknown · mid=home</p>
-<script>
-const img=document.getElementById('f'), cap=document.getElementById('cap');
-function next(){ img.src='/map.png?t='+Date.now(); }
-img.onload=img.onerror=()=>requestAnimationFrame(next);
-document.getElementById('ret').onclick=()=>fetch('/return',{method:'POST'});
-async function stat(){ try{const s=await (await fetch('/status?t='+Date.now())).json();
-  const c=s.cmd?('v='+s.cmd.v+' w='+s.cmd.w+(s.cmd.stop?' STOP':'')):'-';
-  cap.textContent='brain: '+s.brain+' | mode: '+s.mode+' | drive: '+c+' | folds: '+s.folds+' | grid: '+(s.grid_wh||'-');}catch(e){} }
-setInterval(stat,500); stat(); next();
-</script></body>"""
+# ============================================================ web (serves real viewer) =
+def _static(path: str) -> "tuple[bytes, str] | None":
+    """Read a file from the vendored visualization/ dir (path-traversal safe)."""
+    rel = path.lstrip("/") or "index.html"
+    target = (VIZ / rel).resolve()
+    if target != VIZ.resolve() and VIZ.resolve() not in target.parents:
+        return None
+    if not target.is_file():
+        return None
+    ctype = mimetypes.guess_type(str(target))[0] or "application/octet-stream"
+    if target.suffix == ".js":
+        ctype = "application/javascript"  # ES modules need a JS MIME type
+    return target.read_bytes(), ctype
 
 
 class _Handler(BaseHTTPRequestHandler):
@@ -311,35 +378,71 @@ class _Handler(BaseHTTPRequestHandler):
         self.wfile.write(body)
 
     def do_POST(self):
-        if self.path.split("?", 1)[0] == "/return":
-            _nav.request_return()
+        path = self.path.split("?", 1)[0]
+        if path == "/return":
+            with _nav_lock:
+                _nav.request_return()
             self._send(200, "application/json", b'{"ok":true}')
+        elif path == "/calibrate":
+            # Kick off the motor-driven pose calibration (drives forward + turn). Re-runnable.
+            if _calibrating:
+                self._send(409, "application/json", b'{"error":"already calibrating"}')
+            else:
+                threading.Thread(target=_run_calibration, name="calibrate", daemon=True).start()
+                self._send(200, "application/json", b'{"ok":true,"msg":"calibration started"}')
+        elif path == "/drive":
+            # Bench wiring test (phone-independent): POST /drive?v=0.15&w=0&secs=2
+            from urllib.parse import parse_qs, urlparse
+            q = parse_qs(urlparse(self.path).query)
+            try:
+                v = float(q.get("v", ["0.15"])[0]); w = float(q.get("w", ["0"])[0])
+                secs = min(float(q.get("secs", ["2"])[0]), 10.0)  # cap at 10 s for safety
+            except ValueError:
+                self._send(400, "text/plain", b"bad v/w/secs"); return
+            if _calibrating or _manual:
+                self._send(409, "application/json", b'{"error":"motors busy"}')
+            else:
+                threading.Thread(target=_manual_drive, args=(v, w, secs), daemon=True).start()
+                self._send(200, "application/json",
+                           json.dumps({"ok": True, "v": v, "w": w, "secs": secs}).encode())
+        elif path == "/start":   # ARM autonomy — the rover begins driving (explore)
+            global _armed
+            _armed = True
+            self._send(200, "application/json", b'{"ok":true,"armed":true}')
+        elif path == "/stop":    # DISARM — brake + hold still (safe). App keeps running/mapping.
+            _armed = False
+            _send_stop()
+            self._send(200, "application/json", b'{"ok":true,"armed":false}')
         else:
             self._send(404, "text/plain", b"not found")
 
     def do_GET(self):
         path = self.path.split("?", 1)[0]
-        if path == "/map.png":
-            with _lock:
-                png = _state["map_png"]
-            self._send(200, "image/png", png) if png else self._send(503, "text/plain", b"no map yet")
+        if path == "/mapupdate":
+            body = _map_update_json()
+            self._send(200, "application/json", body) if body else self._send(503, "text/plain", b"no map yet")
         elif path == "/status":
             with _lock:
-                s = {k: _state[k] for k in ("brain", "upstream", "folds", "grid_wh", "mode", "cmd", "base")}
+                s = {k: _state[k] for k in ("brain", "upstream", "folds", "grid_wh", "mode", "cmd", "base", "drive", "calib")}
                 s["bridge"] = _BRIDGE
-                s["telemetry"] = dict(_telemetry)
+                s["calibrating"] = _calibrating
+                s["armed"] = _armed
             self._send(200, "application/json", json.dumps(s).encode())
         else:
-            self._send(200, "text/html; charset=utf-8", _PAGE.encode())
+            asset = _static(path)
+            self._send(200, asset[1], asset[0]) if asset else self._send(404, "text/plain", b"not found")
 
 
 def _serve():
+    # 0.0.0.0 is the container's internal interface; App Lab maps :8000 to the host for the
+    # demo UI (the container is not on the LAN itself). The host-side LAN exposure that
+    # mattered — the raw depth feed — is locked to the docker bridges in lidar_feed.py.
     ThreadingHTTPServer(("0.0.0.0", PORT), _Handler).serve_forever()
 
 
 threading.Thread(target=_serve, name="brain-web", daemon=True).start()
 threading.Thread(target=_brain_loop, name="brain", daemon=True).start()
-print(f"[brain] serving map on :{PORT}; pulling /data from gateway:{FEED_PORT}; bridge={_BRIDGE}", flush=True)
+print(f"[brain] serving viewer + /mapupdate on :{PORT}; pulling /data from gateway:{FEED_PORT}; bridge={_BRIDGE}", flush=True)
 
 
 def loop() -> None:

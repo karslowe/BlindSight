@@ -1,0 +1,110 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+  <title>Recon Rover - Live Map</title>
+  <style>
+    :root {
+      --panel: rgba(20, 24, 31, 0.82);
+      --border: rgba(255, 255, 255, 0.12);
+    }
+    * { box-sizing: border-box; }
+    html, body {
+      margin: 0; height: 100%; background: #11151c; color: #ecf0f1;
+      font-family: system-ui, -apple-system, sans-serif; overflow: hidden;
+      -webkit-user-select: none; user-select: none;
+    }
+    /* The canvas owns all pointer gestures (pan/zoom); stop the browser hijacking them. */
+    #map { display: block; width: 100vw; height: 100vh; touch-action: none; }
+
+    .panel {
+      position: fixed; background: var(--panel); border: 1px solid var(--border);
+      border-radius: 10px; backdrop-filter: blur(6px); -webkit-backdrop-filter: blur(6px);
+    }
+
+    /* Map stats, top-left. */
+    #hud { top: 12px; left: 12px; padding: 8px 12px; font-size: 13px; font-variant-numeric: tabular-nums; }
+
+    /* Connection badge, top-right. */
+    #status {
+      top: 12px; right: 12px; padding: 8px 12px; font-size: 13px; font-weight: 600;
+      display: flex; align-items: center; gap: 8px;
+    }
+    #status .dot { width: 10px; height: 10px; border-radius: 50%; background: #95a5a6; }
+    #status.live .dot { background: #2ecc71; box-shadow: 0 0 8px #2ecc71; }
+    #status.sim  .dot { background: #f39c12; box-shadow: 0 0 8px #f39c12; }
+    #status.down .dot { background: #e74c3c; box-shadow: 0 0 8px #e74c3c; }
+
+    /* Legend, bottom-left. */
+    #legend { bottom: 12px; left: 12px; padding: 10px 12px; font-size: 12px; line-height: 1.7; }
+    #legend .row { display: flex; align-items: center; gap: 8px; }
+    #legend .sw { width: 14px; height: 14px; border-radius: 3px; flex: 0 0 auto; }
+    #legend .line { width: 16px; height: 0; flex: 0 0 auto; }
+
+    /* Controls, bottom-right. */
+    #controls { bottom: 12px; right: 12px; padding: 8px; display: flex; gap: 8px; background: none; border: none; }
+    .btn {
+      min-height: 44px; min-width: 44px; padding: 0 16px; font-size: 14px; font-weight: 600;
+      color: #ecf0f1; background: var(--panel); border: 1px solid var(--border);
+      border-radius: 10px; cursor: pointer;
+    }
+    .btn:active { background: rgba(255, 255, 255, 0.12); }
+
+    /* Primary action, bottom-center. */
+    #return {
+      position: fixed; bottom: 16px; left: 50%; transform: translateX(-50%);
+      min-height: 52px; padding: 0 30px; font-size: 16px; font-weight: 700;
+      border: 0; border-radius: 12px; background: #2d6cdf; color: white; cursor: pointer;
+      box-shadow: 0 4px 16px rgba(45, 108, 223, 0.4);
+    }
+    #return:active { background: #245ab8; }
+  </style>
+
+  <!--
+    Plain static path (recommended): load Three.js from a CDN, no build step. Only needed
+    for the later 3D point-cloud upgrade; the 2D canvas viewer works without it.
+  -->
+  <!--
+  <script type="importmap">
+    { "imports": { "three": "https://unpkg.com/three@0.169.0/build/three.module.js" } }
+  </script>
+  -->
+</head>
+<body>
+  <!-- viewer.js renders the map and owns pan/zoom on this canvas. -->
+  <canvas id="map"></canvas>
+
+  <!-- Map stats (owned by viewer.js). -->
+  <div id="hud" class="panel">waiting for map...</div>
+
+  <!-- Connection badge (owned by ws_client.js). -->
+  <div id="status" class="panel"><span class="dot"></span><span class="label">connecting...</span></div>
+
+  <!-- Color legend so judges can read the map at a glance. -->
+  <div id="legend" class="panel">
+    <div class="row"><span class="sw" style="background:#e74c3c"></span> Obstacle</div>
+    <div class="row"><span class="sw" style="background:#cfd8dc"></span> Free space</div>
+    <div class="row"><span class="sw" style="background:#222831"></span> Unknown</div>
+    <div class="row"><span class="sw" style="background:#f1c40f"></span> Rover</div>
+    <div class="row"><span class="sw" style="background:#1abc9c"></span> Start</div>
+    <div class="row"><span class="sw" style="background:#e84393"></span> Target (YOLO)</div>
+    <div class="row"><span class="line" style="border-top:3px solid #2ecc71"></span> Route home</div>
+    <div class="row"><span class="line" style="border-top:3px dotted #141821"></span> Trail (where it drove)</div>
+  </div>
+
+  <!-- View controls. -->
+  <div id="controls">
+    <button id="btn-reset" class="btn" title="Reset view">Reset</button>
+    <button id="btn-fullscreen" class="btn" title="Fullscreen">&#x26F6;</button>
+  </div>
+
+  <!-- Primary action. -->
+  <button id="return">Return to start</button>
+
+  <!-- Order matters: viewer defines the render hook first, then ws_client feeds it.
+       The ?v query busts the browser cache when these change - bump it after edits. -->
+  <script type="module" src="src/viewer.js?v=6"></script>
+  <script type="module" src="src/ws_client.js?v=6"></script>
+</body>
+</html>
