@@ -59,8 +59,12 @@ def _ensure_numpy() -> None:
 
 
 _ensure_numpy()
-from schemas.schemas import Pose  # noqa: E402
+from schemas.schemas import Pose, Target  # noqa: E402
 from navigator import Navigator  # noqa: E402  (autonomy core; sets up navigation/shared paths)
+
+# When a target (e.g. a bottle) is detected by the host feed, head home. The find-a-target
+# mission's base case. Set BLINDSIGHT_RETURN_ON_TARGET=0 to keep exploring after a find.
+RETURN_ON_TARGET = os.environ.get("BLINDSIGHT_RETURN_ON_TARGET", "1") != "0"
 
 # Optional: the App Lab Bridge to the MCU. Imported lazily so the brain runs without it.
 try:
@@ -73,10 +77,11 @@ _lock = threading.Lock()        # guards _state (status fields)
 _nav_lock = threading.Lock()    # guards the grid/planner (brain writes, /mapupdate reads)
 _state = {"brain": "starting", "upstream": "unknown", "folds": 0,
           "grid_wh": None, "mode": "explore", "cmd": None, "base": None, "drive": "—",
-          "calib": "idle"}
+          "calib": "idle", "targets": 0}
 
 _nav = Navigator()
 _last_pose = None  # most recent Pose (for building MapUpdate); guarded by _nav_lock
+_last_targets = []  # detected targets (from the host feed), in the map frame; guarded by _nav_lock
 
 
 # ============================================================ host-feed discovery ====
@@ -291,13 +296,13 @@ def _map_update_json() -> "bytes | None":
             return None
         path = _nav.planner.current_path() if _nav.returning else []
         home = None if _nav.start_pose is None else {"x": _nav.start_pose.x, "y": _nav.start_pose.y}
-        mu = _nav.grid.to_map_update(_last_pose, return_path=path, start=home)
+        mu = _nav.grid.to_map_update(_last_pose, return_path=path, targets=_last_targets, start=home)
     return json.dumps(mu.to_dict()).encode()
 
 
 # ============================================================ brain loop ==============
 def _brain_loop() -> None:
-    global _last_pose
+    global _last_pose, _last_targets
     base = None
     last_fid = -1
     while True:
@@ -322,9 +327,18 @@ def _brain_loop() -> None:
                 last_fid = fid
                 pose = Pose(x=pose_d["x"], y=pose_d["y"], theta=pose_d["theta"],
                             timestamp=pose_d.get("timestamp", time.time()))
+                # Targets located by the host feed's YOLO (map frame). Forwarded to the viewer
+                # and used to trigger return-home.
+                tg = data.get("targets") or []
+                targets = [Target(x=float(t["x"]), y=float(t["y"]),
+                                  label=t.get("label", "target"),
+                                  confidence=float(t.get("confidence", 1.0))) for t in tg]
                 with _nav_lock:
                     cmd = _nav.step(pose, [(a, r) for a, r in scan])
                     _last_pose = pose
+                    _last_targets = targets
+                    if targets and RETURN_ON_TARGET and not _nav.returning:
+                        _nav.request_return()  # found the target -> head home
                 # SAFETY: only drive when explicitly armed. Disarmed = keep mapping but hold
                 # the brakes — so the rover never auto-drives (e.g. into a wall) on startup or
                 # before calibration. Calibration owns the motors separately while it runs.
@@ -338,6 +352,7 @@ def _brain_loop() -> None:
                     _state["folds"] += 1
                     _state["grid_wh"] = [_nav.grid.width, _nav.grid.height]
                     _state["mode"] = "return" if _nav.returning else "explore"
+                    _state["targets"] = len(targets)
                     _state["upstream"] = "mapping"
                     _state["cmd"] = (None if cmd is None else
                                      {"v": round(cmd.linear_velocity, 3),
@@ -423,7 +438,7 @@ class _Handler(BaseHTTPRequestHandler):
             self._send(200, "application/json", body) if body else self._send(503, "text/plain", b"no map yet")
         elif path == "/status":
             with _lock:
-                s = {k: _state[k] for k in ("brain", "upstream", "folds", "grid_wh", "mode", "cmd", "base", "drive", "calib")}
+                s = {k: _state[k] for k in ("brain", "upstream", "folds", "grid_wh", "mode", "cmd", "base", "drive", "calib", "targets")}
                 s["bridge"] = _BRIDGE
                 s["calibrating"] = _calibrating
                 s["armed"] = _armed
