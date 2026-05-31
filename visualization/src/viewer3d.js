@@ -162,6 +162,11 @@ function renderMap(update) {
     }
   }
 
+  // Ground level for the markers. 0 with a real occupancy map (floor drawn at 0); in a pure
+  // walk-around it's set to the cloud's lowest point so the rover + start sit ON the floor
+  // (ARKit's height-zero is the start hand height, not the floor, so we estimate it).
+  let groundY = 0;
+
   // 3D structure: the real point cloud (Flavor B) if present, else extruded walls (Flavor A).
   const pc = update.point_cloud || [];
   const numPts = Math.min((pc.length / 3) | 0, POINT_CAP);
@@ -219,6 +224,7 @@ function renderMap(update) {
     // grid-aligned floor (it has mapped cells, so this branch is skipped there).
     const known = cells.filter((v) => v !== -1).length;
     if (known === 0 && floor) {
+      groundY = zmin;  // markers sit on this same level as the dropped floor
       floor.position.set(cenX, zmin - 0.02, -cenY);
       floor.scale.setScalar((span * 1.6 + 1.0) / (width * resolution_m));
     }
@@ -247,14 +253,14 @@ function renderMap(update) {
 
   // Rover.
   if (update.pose) {
-    rover.position.set(update.pose.x, 0.13, -update.pose.y);
+    rover.position.set(update.pose.x, groundY + 0.13, -update.pose.y);
     rover.rotation.y = update.pose.theta;
     rover.visible = true;
   }
 
   // START marker (authoritative position from update.start).
   if (update.start) {
-    startMarker.position.set(update.start.x, 0.04, -update.start.y);
+    startMarker.position.set(update.start.x, groundY + 0.04, -update.start.y);
     startMarker.visible = true;
   }
 
