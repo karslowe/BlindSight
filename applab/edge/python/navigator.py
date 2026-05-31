@@ -60,10 +60,19 @@ SIDE_ARC_RAD = 1.40     # side clearance is measured out to +/- this (~80 deg)
 BOX_DIST_M = 0.35       # something this close ahead, AND no open side, = boxed -> reverse
 SIDE_OPEN_M = 0.60      # a side counts as "open enough to slip past" if clearer than this
 
+# ---- corridor centering: keep parallel/centred so it reaches the end of a corridor instead
+# of drifting into a side wall when heading down it at an angle ----
+CORRIDOR_DIST_M = 1.6   # a side ray closer than this = a wall is there -> center against it
+CENTER_GAIN = 0.9       # steer-back strength per metre of left/right clearance imbalance
+CENTER_SIDE_RAD = 0.30  # rays beyond +/- this graze the side walls (used for centering)
+
 # ---- 360 survey spin: stop and turn a full circle to map the surroundings -----------
 SURVEY_W = 1.0              # spin rate during a survey, rad/s
-SURVEY_INTERVAL_M = 4.0     # re-survey only after exploring this much NEW ground (one 360 at
-                            # start, then commit to driving; survey again after a good distance)
+SURVEY_MIN_GAP_M = 1.5      # don't survey again until at least this much new ground is covered.
+                            # Surveys fire at DECISION POINTS (the current path is done — a
+                            # junction / "another path to consider"), NOT on a fixed interval,
+                            # so the rover commits to driving a direction as far as it goes
+                            # first; this gap just stops it spinning after a trivially short hop.
 SURVEY_SWEEP_RAD = 2 * math.pi * 0.97  # count a survey done at ~360 deg (allow slight under)
 SURVEY_MAX_S = 15.0        # hard cap: give up the survey after this long so a rover that
                            # isn't physically rotating can't spin-command forever (it falls
@@ -147,16 +156,22 @@ class Navigator:
                 self._dist_since_survey += math.hypot(pose.x - self._prev_xy[0],
                                                        pose.y - self._prev_xy[1])
             self._prev_xy = (pose.x, pose.y)
-            # 360 survey: spin in place to map the surroundings (initial + every few metres).
-            if not self._surveying and self._dist_since_survey >= SURVEY_INTERVAL_M:
+            # 360 survey at DECISION POINTS: when the current path is finished (reached the
+            # frontier it was driving to — a junction / end of this path) AND we've covered
+            # some ground since the last survey. So it drives a direction as far as the path
+            # goes, then spins to check for other paths before choosing the next one.
+            at_decision = not self.planner.current_path() or self.planner.finished()
+            if not self._surveying and at_decision and self._dist_since_survey >= SURVEY_MIN_GAP_M:
                 self._begin_survey(pose)
             if self._surveying:
                 return self._run_survey(pose)
             cmd = self._explore(pose)
 
         # ---- reactive layer, applied to whichever command above (explore OR return) ----
-        # Veer around small obstacles; only reverse/turn when truly boxed or stuck. This is
-        # what stops RETURN (and explore) from plowing into walls and parking there.
+        # Center in a corridor (stay parallel, reach the end), then veer around small
+        # obstacles; only reverse/turn when truly boxed or stuck. This is what stops RETURN
+        # (and explore) from plowing into walls and parking there.
+        cmd = self._corridor_center(cmd)
         cmd = self._avoid(cmd)
         wants_forward = cmd is not None and cmd.stop == 0 and cmd.linear_velocity > 1e-3
         if wants_forward and (self._boxed() or self._stuck(now)):
@@ -181,9 +196,10 @@ class Navigator:
     # ---- exploration ----
 
     def _explore(self, pose: Pose) -> "DriveCommand | None":
-        self._explore_ticks += 1
-        need_target = not self.planner.current_path() or self.planner.finished()
-        if need_target or self._explore_ticks % 15 == 0:
+        # Commit to the chosen path: pick a NEW frontier only when the current one is finished
+        # (or there is none) — no mid-path re-planning — so the rover keeps heading the same
+        # way as far as the path goes instead of dithering between frontiers each tick.
+        if not self.planner.current_path() or self.planner.finished():
             path = self.explorer.next_path(self.grid, pose)
             if path is None:
                 self.request_return()
@@ -219,6 +235,25 @@ class Navigator:
         w = max(-AVOID_W, min(AVOID_W, w))
         v = cmd.linear_velocity * (1.0 - AVOID_SLOW * urgency)
         return DriveCommand(v, w, 0)
+
+    def _corridor_center(self, cmd):
+        """In a corridor, steer to balance left vs right wall clearance — keeps the rover
+        parallel and centred so it drives to the END instead of veering into a side wall when
+        it enters at an angle. Uses the outer FOV rays (they graze the side walls). No-op in
+        open space (both sides far) so it doesn't fight the goal-seeker."""
+        if cmd is None or cmd.stop or cmd.linear_velocity <= 1e-3 or not self._last_scan:
+            return cmd
+        left = [r for a, r in self._last_scan if a > CENTER_SIDE_RAD and 0 < r < NO_RETURN_M]
+        right = [r for a, r in self._last_scan if a < -CENTER_SIDE_RAD and 0 < r < NO_RETURN_M]
+        if not left or not right:
+            return cmd
+        lc, rc = min(left), min(right)
+        if lc > CORRIDOR_DIST_M and rc > CORRIDOR_DIST_M:
+            return cmd  # open both sides — not a corridor
+        # steer toward the more-open side, away from the nearer wall (+w = left/CCW)
+        w = cmd.angular_velocity + CENTER_GAIN * (lc - rc)
+        w = max(-AVOID_W, min(AVOID_W, w))
+        return DriveCommand(cmd.linear_velocity, w, cmd.stop)
 
     def _boxed(self) -> bool:
         """True only when something is close ahead AND neither side is open enough to slip
