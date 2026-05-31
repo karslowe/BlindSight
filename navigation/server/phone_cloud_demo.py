@@ -48,6 +48,10 @@ MAX_RANGE_M = 4.0
 # Accumulation: dedup points onto a voxel grid so revisiting a spot does not pile up points.
 VOXEL_M = 0.03  # finer dedup -> denser surfaces (was 0.04)
 MAX_POINTS = 50000  # cap the accumulated cloud; matches the viewer's POINT_CAP
+# Accumulate every frame at the phone's full rate, but PUBLISH (serialize the whole cloud to
+# JSON + push over the websocket) only this often. Sending the growing cloud every frame was
+# the loop bottleneck; this keeps capture fast and the browser refresh smooth.
+PUBLISH_INTERVAL_S = 0.2
 
 
 def _accumulate(cloud: dict, pts: list) -> None:
@@ -90,11 +94,12 @@ def main() -> None:
     cloud: dict = {}
     start = None
     frames = 0
+    last_publish = 0.0
     try:
         while True:
             frame = link.read()
             if frame is None:
-                time.sleep(0.01)  # no new phone frame yet; do not busy-spin
+                time.sleep(0.005)  # no new phone frame yet; do not busy-spin
                 continue
             if start is None:
                 start = frame.pose
@@ -106,11 +111,14 @@ def main() -> None:
                 frame.depth, frame.intrinsics, frame.extrinsic,
                 stride=STRIDE, min_range_m=MIN_RANGE_M, max_range_m=MAX_RANGE_M,
             )
-            _accumulate(cloud, pts)
-            home = {"x": start.x, "y": start.y}
-            # 2D map stays empty here (this test is the 3D cloud only); pose + cloud carry it.
-            server.publish(grid.to_map_update(frame.pose, [], [], home, _flat(cloud)))
+            _accumulate(cloud, pts)  # every frame, at the phone's full rate
             frames += 1
+            now = time.monotonic()
+            if now - last_publish >= PUBLISH_INTERVAL_S:
+                last_publish = now
+                home = {"x": start.x, "y": start.y}
+                # 2D map stays empty here (3D cloud only); pose + cloud carry it.
+                server.publish(grid.to_map_update(frame.pose, [], [], home, _flat(cloud)))
             if frames % 30 == 0 and cloud:
                 xs = [p[0] for p in cloud.values()]
                 ys = [p[1] for p in cloud.values()]
