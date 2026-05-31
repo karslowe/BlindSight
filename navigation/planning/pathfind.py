@@ -18,10 +18,15 @@ from schemas.schemas import Waypoint  # noqa: E402
 
 _NEIGHBORS = [(-1, 0), (1, 0), (0, -1), (0, 1), (-1, -1), (-1, 1), (1, -1), (1, 1)]
 
-# Default obstacle inflation (cells). At 0.05 m/cell this keeps ~0.15 m of clearance so the
-# rover is never routed flush against a wall/obstacle (the cause of getting wedged), with
-# room for the simple controller to overshoot a turn without hitting it.
-INFLATION_CELLS = 3
+# Wall clearance the planner keeps the path away from mapped obstacles. This is the main
+# defence against clipping walls: the phone's depth wedge is only ~+/-27 deg, so the rover is
+# BLIND to its sides and can't see (let alone react to) a wall it's driving alongside. Routing
+# the path well clear of mapped walls compensates for that blind spot. Values are in METRES and
+# converted to cells against the live grid resolution. The planner falls back to a tighter
+# margin (then none) where the full clearance won't fit, so it can still take doorways/narrow
+# corridors instead of refusing to move.
+WALL_CLEARANCE_M = 0.30        # preferred standoff (rover half-width ~0.10 m + FOV-blind margin)
+WALL_CLEARANCE_TIGHT_M = 0.15  # reduced standoff for tight spots before dropping clearance
 # How strongly to prefer the middle of open space over hugging walls. Multiplies the
 # proximity_cost field; higher = paths bow further from obstacles.
 WALL_WEIGHT = 0.7
@@ -106,11 +111,16 @@ def astar(
 def plan(grid, start_cell: Tuple[int, int], goal_cell: Tuple[int, int]) -> Optional[List[Tuple[int, int]]]:
     """Tiered A*, safest-first. Returns cells start->goal, or None.
 
-    1) clearance + known-free only (the normal case - keeps the rover safe),
-    2) known-free only (no clearance, for tight spots),
-    3) allow unknown (last resort, only if the rover is otherwise cut off).
+    1) full wall clearance + known-free only (the normal case - keeps the rover well off walls
+       it can't see to its sides),
+    2) tight clearance + known-free (for doorways / narrow corridors the full margin won't fit),
+    3) known-free only (no clearance, last-ditch for very tight spots),
+    4) allow unknown (last resort, only if the rover is otherwise cut off).
     """
-    for inflation, block_unknown in ((INFLATION_CELLS, True), (0, True), (0, False)):
+    res = grid.resolution_m or 0.05
+    wide = max(1, round(WALL_CLEARANCE_M / res))
+    tight = max(1, round(WALL_CLEARANCE_TIGHT_M / res))
+    for inflation, block_unknown in ((wide, True), (tight, True), (0, True), (0, False)):
         cells = astar(
             grid, start_cell, goal_cell,
             inflation=inflation, block_unknown=block_unknown, wall_weight=WALL_WEIGHT,

@@ -26,14 +26,24 @@ import numpy as np
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "shared"))
 from schemas.schemas import MapUpdate, Pose, Waypoint  # noqa: E402
 
-# Simple log-odds hit/miss update (POC; not gold-plated). A cell's accumulated evidence is
-# thresholded to the schema's -1/0/100 on output. 0 means "never observed".
+# Log-odds hit/miss update. A cell's accumulated evidence is thresholded to the schema's
+# -1/0/100 on output. 0 means "never observed".
+#
+# Stability (walls were popping in from a single noisy return and getting erased by a couple
+# of stray free rays — range noise reading long, or pose jitter landing the hit one cell over):
+#  - CONFIRMATION: occupied needs >=2 hits (2*3=6 >= OCC_THRESH 4) and free needs >=2 misses
+#    (FREE_THRESH -2) before a cell flips state, so one bad frame can't add or erase a wall.
+#  - STICKY: a wall that keeps being seen climbs toward _L_MAX (25), so it takes ~21 free rays
+#    in a row to erode it back below the occupied threshold — transient free passes can't wipe
+#    a real wall, they just nibble it. Free space is likewise sticky toward _L_MIN.
+# The hit:miss ratio stays 3:1 (occupied evidence outweighs free) so walls persist.
 _L_FREE = -1
 _L_OCC = 3
-_L_MIN = -12
-_L_MAX = 12
-_OCC_THRESH = 2  # evidence >= this -> occupied (100)
-_FREE_THRESH = -1  # evidence <= this -> free (0); strictly between -> unknown (-1)
+_L_MIN = -15
+_L_MAX = 25
+_OCC_THRESH = 4   # evidence >= this -> occupied (100); needs 2 hits to confirm (no pop-in)
+_FREE_THRESH = -2  # evidence <= this -> free (0); needs 2 misses to confirm (no hole-punch).
+                   # strictly between the two -> unknown (-1)
 
 _INIT_CELLS = 40  # initial grid is this many cells square, centered on the first pose
 _GROW_MARGIN = 4  # extra cells added on each side when the grid must grow
@@ -55,9 +65,16 @@ class OccupancyGrid:
 
     # ---- coordinate helpers ----
 
+    # A point landing on (or a float-hair below) a cell boundary must bin consistently before
+    # and after a grow, or a fixed world point shifts by a cell when the grid grows (origin
+    # moves by pad*res, which isn't float-exact) — which silently smears/erases the whole map.
+    # The epsilon (well below sub-cell precision, far above accumulated float error) pins the
+    # floor so world->cell is stable across grows.
+    _CELL_EPS = 1e-6
+
     def _world_to_cell(self, wx: float, wy: float) -> Tuple[int, int]:
-        c = int(math.floor((wx - self.origin["x"]) / self.resolution_m))
-        r = int(math.floor((wy - self.origin["y"]) / self.resolution_m))
+        c = int(math.floor((wx - self.origin["x"]) / self.resolution_m + self._CELL_EPS))
+        r = int(math.floor((wy - self.origin["y"]) / self.resolution_m + self._CELL_EPS))
         return c, r
 
     def _init_grid(self, pose: Pose) -> None:
@@ -202,19 +219,29 @@ class OccupancyGrid:
     def blocked_array(self, inflate_cells: int = 0):
         """Boolean (height, width) mask: True where occupied, dilated by inflate_cells.
 
-        Used by the planner to keep a safety margin from walls/obstacles so the rover is
-        never routed flush against them. None if nothing is mapped yet.
+        Used by the planner to keep a safety margin from walls/obstacles so the rover is never
+        routed flush against them. The dilation is CIRCULAR (Euclidean), so the clearance is the
+        same in every direction — iterative 4-neighbour dilation makes a diamond, which leaves
+        diagonal approaches only ~0.7x the intended standoff. None if nothing is mapped yet.
         """
         if self._log is None:
             return None
-        blocked = self._log >= _OCC_THRESH
-        for _ in range(max(0, inflate_cells)):
-            b = blocked.copy()
-            b[1:, :] |= blocked[:-1, :]
-            b[:-1, :] |= blocked[1:, :]
-            b[:, 1:] |= blocked[:, :-1]
-            b[:, :-1] |= blocked[:, 1:]
-            blocked = b
+        occ = self._log >= _OCC_THRESH
+        k = int(max(0, inflate_cells))
+        if k == 0:
+            return occ
+        blocked = occ.copy()
+        h, w = occ.shape
+        for dr in range(-k, k + 1):
+            for dc in range(-k, k + 1):
+                if dr == 0 and dc == 0:
+                    continue
+                if dc * dc + dr * dr > k * k:  # outside the clearance radius (circular, not diamond)
+                    continue
+                # blocked[r, c] |= occ[r - dr, c - dc] over the in-bounds overlap (no wrap).
+                r0, r1 = max(0, dr), h + min(0, dr)
+                c0, c1 = max(0, dc), w + min(0, dc)
+                blocked[r0:r1, c0:c1] |= occ[r0 - dr:r1 - dr, c0 - dc:c1 - dc]
         return blocked
 
     def proximity_cost(self, radius: int = 5):
