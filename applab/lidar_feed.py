@@ -69,7 +69,17 @@ import json as _json
 from pathlib import Path as _Path
 CALIB_FILE = _Path.home() / "blindsight_calib.json"
 _calib_lock = threading.Lock()
-_calib = {"fwd": "tz", "fwd_sign": 1, "lat": "tx", "lat_sign": 1, "yaw_sign": 1, "scan_sign": 1}
+_calib = {"fwd": "tz", "fwd_sign": 1, "lat": "tx", "lat_sign": 1, "yaw_sign": 1, "scan_sign": 1,
+          # scan tuning (fixes "open corridor read as a wall"):
+          "conf_min": 1,          # drop LiDAR returns below this confidence (0/1/2); 2 = strictest
+          "ground_reject": 1,     # 1 = drop floor returns (phantom walls across open floor)
+          "cam_height_m": 0.12,   # phone camera height above the floor (m) — tune to your mount
+          "ground_margin_m": 0.06,  # keep returns this far above the floor as real obstacles
+          "auto_pitch": 1,        # 1 = derive camera pitch from the pose each frame (recommended)
+          "auto_pitch_sign": 1,   # flip to -1 if /depthprobe pitch_auto has the wrong sign
+          "pitch_offset_deg": 0.0,  # added to the auto pitch (bias correction)
+          "pitch_deg": 0.0}       # manual fallback tilt (deg, nose-down +) when auto_pitch=0
+_scan_dbg = {}  # last scan diagnostics for /depthprobe
 
 
 def _load_calib() -> None:
@@ -155,35 +165,85 @@ def _pose_from_camera(cam, ts: float) -> dict:
             "theta": c["yaw_sign"] * float(yaw), "timestamp": ts, "raw": raw}
 
 
-def _depth_to_scan(depth, intr) -> list:
+def _pitch_from_cam(cam) -> float:
+    """Camera down-tilt below horizontal, in DEGREES (nose-down positive), from the pose.
+
+    ARKit's world frame is gravity-aligned (Y up), so the camera's forward axis (+Z) world
+    Y-component gives how much the optical axis dips below horizontal: pitch = asin(-Zf.y),
+    where Zf.y = 2(qy*qz - qx*qw). Same quaternion convention the yaw extraction above uses.
+    Sign/offset are correctable at runtime (auto_pitch_sign, pitch_offset_deg) since the
+    record3d/pinhole convention can flip — verify with /depthprobe (level -> ~0, tilt -> +).
+    """
+    qx, qy, qz, qw = cam.qx, cam.qy, cam.qz, cam.qw
+    s = max(-1.0, min(1.0, 2.0 * (qx * qw - qy * qz)))   # -(forward+Z world Y component)
+    return math.degrees(math.asin(s))
+
+
+def _depth_to_scan(depth, intr, conf=None, pitch_auto_deg=0.0) -> list:
     """Horizontal ray fan from the depth frame: list of [angle_offset_rad, range_m].
 
-    Takes a band of rows around the vertical center, the nearest valid depth per column, and
-    converts each sampled column to (angle relative to the optical axis, ray range). Columns
-    left of center are CCW-positive to match the grid's angle convention. z-depth is converted
-    to ray length by /cos(angle). Invalid/empty columns emit the DEPTH_MAX_M no-return sentinel.
+    Takes a band of rows around the vertical center; per column, the nearest depth that is
+    (a) valid, (b) high-enough LiDAR confidence, and (c) NOT the floor. Converts to (angle,
+    range). The confidence + ground filters fix "open corridor read as a wall": low-confidence
+    distant returns and the floor a couple metres ahead are both dropped instead of becoming
+    phantom walls. Columns with no obstacle return the DEPTH_MAX_M no-return sentinel (free).
+
+    Ground rejection: for a roughly level camera at height `cam_height_m`, a floor pixel sits
+    that far below the optical axis — its reconstructed height Yc=(row-cy)/fy*depth ≈ cam_height.
+    Pixels at/below floor level are dropped; ones standing >ground_margin above it are obstacles.
     """
     d = np.asarray(depth, dtype=np.float32)
     h, w = d.shape
-    fx = float(intr[0, 0]) if intr is not None else float(w)  # fallback: ~53 deg HFOV
+    fx = float(intr[0, 0]) if intr is not None else float(w)
+    fy = float(intr[1, 1]) if intr is not None else float(w)
     cx = float(intr[0, 2]) if intr is not None else (w / 2.0)
-    # intrinsics may be quoted at a different resolution than the depth frame; scale to width.
+    cy = float(intr[1, 2]) if intr is not None else (h / 2.0)
+    # intrinsics may be quoted at a different resolution than the depth frame; scale to it.
     if intr is not None and abs(cx - w / 2.0) > w * 0.25:
-        s = w / (2.0 * cx)
-        fx *= s; cx *= s
-    r0 = max(0, int(h * (0.5 - SCAN_BAND / 2))); r1 = min(h, int(h * (0.5 + SCAN_BAND / 2)) + 1)
-    band = d[r0:r1, :]
-    band = np.where(np.isfinite(band) & (band > 0.05), band, np.inf)
-    col_min = band.min(axis=0)  # nearest obstacle per column
-    cols = np.linspace(0, w - 1, SCAN_RAYS).astype(int)
+        sx = w / (2.0 * cx); fx *= sx; cx *= sx
+        sy = h / (2.0 * cy); fy *= sy; cy *= sy
     with _calib_lock:
-        scan_sign = _calib["scan_sign"]  # +1 left-of-center=CCW; -1 if the depth is mirrored
-    scan = []
+        c = dict(_calib)
+    r0 = max(0, int(h * (0.5 - SCAN_BAND / 2)))
+    r1 = min(h, int(h * (0.5 + SCAN_BAND / 2)) + 1)
+    rows = np.arange(r0, r1)
+
+    # Effective camera pitch: derived from the pose (auto) or the manual override.
+    if c.get("auto_pitch"):
+        pitch_deg = c.get("auto_pitch_sign", 1) * pitch_auto_deg + c.get("pitch_offset_deg", 0.0)
+    else:
+        pitch_deg = c.get("pitch_deg", 0.0)
+
+    band = d[r0:r1, :].astype(np.float32)
+    valid = np.isfinite(band) & (band > 0.05)
+    if conf is not None and conf.shape == d.shape:           # drop low-confidence returns
+        valid &= (conf[r0:r1, :] >= c["conf_min"])
+    if c.get("ground_reject"):                               # drop floor returns
+        # True drop below the camera, accounting for a nose-down pitch: a floor point sits at
+        # ~cam_height regardless of distance. depth * [(row-cy)/fy*cos(pitch) + sin(pitch)].
+        pitch = math.radians(pitch_deg)
+        yc = band * ((rows[:, None].astype(np.float32) - cy) / fy * math.cos(pitch) + math.sin(pitch))
+        floor = yc >= (c["cam_height_m"] - c["ground_margin_m"])
+        valid &= ~floor
+
+    band = np.where(valid, band, np.inf)
+    col_min = band.min(axis=0)                               # nearest kept obstacle per column
+
+    cols = np.linspace(0, w - 1, SCAN_RAYS).astype(int)
+    scan, n_obst = [], 0
     for u in cols:
-        ang = scan_sign * math.atan2(cx - u, fx)  # left of center -> positive (CCW) by default
+        ang = c["scan_sign"] * math.atan2(cx - u, fx)
         z = col_min[u]
-        rng = DEPTH_MAX_M if not np.isfinite(z) else min(float(z) / max(math.cos(ang), 1e-3), DEPTH_MAX_M)
+        if np.isfinite(z):
+            rng = min(float(z) / max(math.cos(ang), 1e-3), DEPTH_MAX_M)
+            n_obst += rng < DEPTH_MAX_M - 1e-6
+        else:
+            rng = DEPTH_MAX_M
         scan.append([round(ang, 5), round(rng, 4)])
+    with _calib_lock:
+        _scan_dbg.update(rays=len(scan), obstacles=int(n_obst), conf_min=c["conf_min"],
+                         ground_reject=int(bool(c.get("ground_reject"))),
+                         pitch_auto_deg=round(pitch_auto_deg, 1), pitch_used_deg=round(pitch_deg, 1))
     return scan
 
 
@@ -218,8 +278,13 @@ def _capture_loop() -> None:
                 except Exception:  # noqa: BLE001
                     intr = None
                 try:
-                    pose = _pose_from_camera(stream.get_camera_pose(), time.time())
-                    scan = _depth_to_scan(d, intr)
+                    conf = np.asarray(stream.get_confidence_frame())  # 0=low,1=med,2=high
+                except Exception:  # noqa: BLE001
+                    conf = None
+                try:
+                    cam = stream.get_camera_pose()
+                    pose = _pose_from_camera(cam, time.time())
+                    scan = _depth_to_scan(d, intr, conf, _pitch_from_cam(cam))
                 except Exception:  # noqa: BLE001
                     pass
                 with _lock:
@@ -303,6 +368,20 @@ class _Handler(BaseHTTPRequestHandler):
         elif path == "/calib":
             with _calib_lock:
                 self._send(200, "application/json", _json.dumps(_calib).encode())
+        elif path == "/depthprobe":
+            # Diagnostic: scan summary + the center column's depth down the rows. A floor reads
+            # as depth that RAMPS DOWN toward the bottom rows; low-confidence noise is erratic.
+            with _lock:
+                d = _state["latest_depth"]
+            with _calib_lock:
+                dbg = dict(_scan_dbg); cal = {k: _calib[k] for k in
+                          ("conf_min", "ground_reject", "cam_height_m", "ground_margin_m")}
+            out = {"scan": dbg, "calib": cal}
+            if d is not None:
+                col = d[:, d.shape[1] // 2]
+                rows = np.linspace(0, len(col) - 1, 12).astype(int)
+                out["center_col_depth"] = [round(float(col[r]), 2) for r in rows]
+            self._send(200, "application/json", _json.dumps(out).encode())
         else:
             self._send(200, "text/html; charset=utf-8", _PAGE.encode())
 
@@ -313,7 +392,9 @@ class _Handler(BaseHTTPRequestHandler):
             try:
                 n = int(self.headers.get("Content-Length", 0))
                 body = _json.loads(self.rfile.read(n).decode()) if n else {}
-                allowed = {"fwd", "fwd_sign", "lat", "lat_sign", "yaw_sign", "scan_sign"}
+                allowed = {"fwd", "fwd_sign", "lat", "lat_sign", "yaw_sign", "scan_sign",
+                           "conf_min", "ground_reject", "cam_height_m", "ground_margin_m",
+                           "pitch_deg", "auto_pitch", "auto_pitch_sign", "pitch_offset_deg"}
                 with _calib_lock:
                     _calib.update({k: body[k] for k in body if k in allowed})
                     snap = dict(_calib)
