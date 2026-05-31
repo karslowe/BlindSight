@@ -6,8 +6,9 @@ _Last updated: 2026-05-31. Board: Arduino UNO Q (Qualcomm Dragonwing, Debian Tri
 
 The architecture question is resolved (**Branch B**) and the full data path is built and
 validated on **live phone data**: iPhone → native host capture → occupancy map served inside
-App Lab. The only blocked item is the **geometry calibration**, which needs the phone
-physically mounted on the rover. Everything else below can proceed in the meantime.
+App Lab. Blocked items: the **geometry calibration** (needs the phone mounted on the rover)
+and **running `applab/navsim.py`** to validate the new obstacle-recovery FSM (the rover used
+to park at walls). Everything else below can proceed in the meantime.
 
 ## Architecture (decided, evidence-backed)
 
@@ -37,6 +38,7 @@ iPhone ──USB──> HOST: ~/lidar_feed.py            APP LAB CONTAINER: edge
 | Brain: pose + scan at `/data` | ✅ | live values sane (90 rays, 0.33–4 m, stable pose) |
 | Brain: OccupancyGrid mapping | ✅ | 30 folds/5 s on live data → grid grew to 75×102 |
 | Autonomy: explore + return-home | ✅ | closed-loop sim: explore → no frontiers → return → home @0.05 m |
+| Autonomy: obstacle recovery | ⚠️ | reverse→turn→replan FSM added to `navigator.py` (was parking at walls); `applab/navsim.py` written but **NOT YET RUN** — validate on the board before trusting |
 | Map rendered CLIENT-SIDE | ✅ | brain serves MapUpdate JSON at `/mapupdate`; real `visualization/` viewer renders it (no server raster) |
 | Car Bridge (Python) | ✅ | `Bridge.call("drive",…)`; API confirmed vs Arduino examples |
 | Car Bridge (sketch.ino) | ⚠️ | drive-only, real V4 pins (single dir-pin/motor) + watchdog; **needs compile + bench pass** |
@@ -61,8 +63,17 @@ iPhone ──USB──> HOST: ~/lidar_feed.py            APP LAB CONTAINER: edge
    single direction pin per motor — + watchdog). REMAINING: compile/flash and confirm a
    `drive` command spins the wheels the right way (flip `*_INVERT`/`SWAP`). TB6612 logic is
    fine at 3.3 V.
-3. **Planning / autonomy.** ✅ DONE + validated (closed-loop sim). `python/navigator.py`
-   (explore + return-home + A*); "Return home" button on :8000 + `POST /return`.
+3. **Planning / autonomy.** ✅ explore + return-home + A* (`python/navigator.py`), validated
+   in closed-loop sim; "Return home" button on :8000 + `POST /return`.
+   ⚠️ **Obstacle recovery added but UNVALIDATED:** the rover used to park at walls (plan-and-
+   follow with no reactive escape). `navigator.py` now has a recovery FSM — triggers on
+   `blocked_ahead` (forward-cone scan < 0.45 m while wanting forward) or `stuck` (net move
+   < 0.06 m / 2 s), then REVERSE ~1 s → TURN toward the open side ~1.2 s → clear path to force
+   a fresh frontier replan. **NEXT ACTION: run `python3 applab/navsim.py`** (wall-ahead closed-
+   loop sim; expects "PASS: rover reached the wall, reversed, and escaped"). Then tune the
+   params at the top of `navigator.py` (`FWD_CLEAR`, `REV_V`, `REVERSE_S`, `TURN_W`, `TURN_S`,
+   `STUCK_*`) against the real rover's frame rate + scan noise. Not run on the dev machine
+   (no local Python).
 4. **Full interactive viewer.** ✅ DONE — serves the real `navigation/visualization` viewer;
    transport swapped from websocket to polling `/mapupdate` (`src/ws_client.js`), rendering
    is client-side.
