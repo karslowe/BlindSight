@@ -42,9 +42,20 @@ class ModulinoIO:
         raise NotImplementedError("read_imu not implemented yet")
 
     def read_distance(self) -> Optional[float]:
-        """Read one range value from the Modulino Distance (ToF) sensor.
+        """Read one range value from a single Modulino Distance (ToF) sensor.
 
         Output: distance in meters, or None if no valid reading.
         TODO: read the ToF register and convert to meters.
         """
         raise NotImplementedError("read_distance not implemented yet")
+
+    def read_distances(self) -> list:
+        """Read all side ToF ranges, one per Modulino Distance sensor, in Qwiic chain order.
+
+        Output: a list of distances in meters (or None per sensor with no valid reading); the
+        order must match main.TOF_ANGLES (index 0 = the module at the first angle). These are
+        the rover's side coverage now that the ultrasonic is gone; the brain folds them into
+        the occupancy grid alongside the phone depth scan.
+        TODO: read each ToF sensor's register and convert to meters.
+        """
+        raise NotImplementedError("read_distances not implemented yet")

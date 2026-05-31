@@ -98,47 +98,40 @@ class Orchestrator:
         self._explore_ticks = 0  # used to re-plan exploration periodically
 
     def setup(self) -> None:
-        """Open hardware links. TODO: open the camera device here too."""
+        """Open hardware links."""
         self.car.connect()
-        self.imu.connect()
+        # Modulino ToF (side coverage) is OPTIONAL: the phone supplies pose + depth + IMU, so
+        # the rover still runs phone-only if the ToF driver is not implemented/connected yet.
+        try:
+            self.imu.connect()
+        except NotImplementedError:
+            print("[setup] modulino ToF driver not implemented; running phone-only")
         self.slam.connect()  # open the phone (Record3D) perception stream
         self.server.run_in_thread()  # serve the viz + open the map websocket for phones
         self.mission_start = time.time()  # start the battery-time failsafe clock
-        # TODO: open the Logitech USB webcam (cv2.VideoCapture) and store the handle.
-
-    def read_frame(self):
-        """Grab one mono camera frame.
-
-        Returns: an image array, or None if no frame is available.
-        TODO: read from the cv2.VideoCapture opened in setup().
-        """
-        return None
 
     def tick(self) -> None:
         """Run one iteration of the mission loop."""
-        frame = self.read_frame()
-        imu_sample = self.imu.read_imu()
-
-        # 2. SLAM: frame + IMU -> Pose.
-        pose = self.slam.process(frame, imu_sample)
+        # SLAM: the phone fuses camera + LiDAR + IMU on-device and streams the latest Pose.
+        pose = self.slam.process()
         if pose is None:
             return  # tracking not yet available
 
         if self.start_pose is None:
             self.start_pose = pose  # remember where "home" is
 
-        # 3. Mapping: assemble ONE scan (rover-frame rays) and fuse it in a single update.
-        #    Per AGENT.MD every sensor contributes (angle_offset, range_m) rays.
-        telemetry = self.car.read_telemetry()
+        # Mapping: assemble ONE scan (rover-frame rays) from phone depth (primary) + side ToFs.
+        self.car.read_telemetry()  # drain the link / heartbeat (bumper available if needed)
         scan: list[tuple[float, float]] = []
         # PRIMARY sensing: the phone's full depth image projected (6-DoF) and sliced into a
-        # 2D obstacle scan. This is what actually fills the map as the rover drives.
+        # 2D obstacle scan. This is what fills the map as the rover drives.
         scan += self.slam.last_depth_scan()
-        # (Step 2) Side ToF: the 3 Modulino Distance beams at fixed angles (still stubbed).
-        # scan += [(a, r) for a, r in zip(TOF_ANGLES, self.imu.read_distances()) if r is not None]
-        # Forward ultrasonic as one extra ray - catches glass / dark surfaces the LiDAR misses.
-        if telemetry and telemetry.ultrasonic_distance is not None and telemetry.ultrasonic_distance >= 0:
-            scan.append((0.0, telemetry.ultrasonic_distance))
+        # Side ToF: the Modulino Distance beams at fixed angles. Guarded until the driver lands.
+        try:
+            scan += [(a, r) for a, r in zip(TOF_ANGLES, self.imu.read_distances())
+                     if r is not None and r >= 0]
+        except NotImplementedError:
+            pass
         if scan:
             self.grid.update(pose, scan)
 

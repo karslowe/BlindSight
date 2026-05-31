@@ -38,12 +38,17 @@ The firmware logic is implemented (DRV parsing, kinematics, PWM control, ultraso
 TEL formatting). The pin constants are now filled with the **Elegoo Smart Car V4 defaults**.
 The car has two sets of sensors/actuators wired to this MCU:
 
+> **Sensing is currently phone (LiDAR) + side ToF only.** The ultrasonic and line sensors are
+> **not read** right now - their pins below are documentation, and `sensors.cpp` reports
+> sentinels for them (the TEL message keeps the fields). Restore the reads from git history to
+> bring them back.
+
 | What | Pins (V4 default) | Notes |
 | --- | --- | --- |
 | Motors (TB6612) | PWMA `5`, AIN1 `7`, PWMB `6`, BIN1 `8`, STBY `3` | V4 uses ONE direction pin per motor + PWM + shared standby (not IN1+IN2). |
-| Ultrasonic (HC-SR04) | TRIG `13`, ECHO `12` | On the front servo. **Verify these two** - they vary by revision. |
-| Line sensors (ITR20001 x3) | left `A2`, center `A1`, right `A0` | **Analog** - read with `analogRead` + threshold, not digital. |
-| Servo (ultrasonic pan) | `10` | Not driven by this firmware yet; home it forward in setup. |
+| Ultrasonic (HC-SR04) | TRIG `13`, ECHO `12` | On the front servo. *Not read now.* Verify these if re-enabling - they vary by revision. |
+| Line sensors (ITR20001 x3) | left `A2`, center `A1`, right `A0` | **Analog** (`analogRead` + threshold). *Not read now.* |
+| Servo (ultrasonic pan) | `10` | Not driven (ultrasonic removed for now). |
 
 The phone (camera + LiDAR + IMU) is the rover's *perception* and connects to the UNO Q's
 Linux side, not here. This MCU only handles the motors and the car's own ultrasonic/line
