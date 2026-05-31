@@ -58,10 +58,15 @@ def _pose_from_camera(cam, timestamp: float) -> Pose:
           x_map = tz (forward), y_map = tx (lateral), theta = yaw about the up (Y) axis.
           Calibrate this once on the bench by driving a known path and checking the Pose.
     """
-    qx, qy, qz, qw = cam.qx, cam.qy, cam.qz, cam.qw
+    # Record3D's pose fields are qx/qy/qz/qw/tx/ty/tz. Demos access them as keys
+    # (cam["qx"]); some builds expose them as attributes (cam.qx). Handle both so this works
+    # regardless of the binding version.
+    f = lambda k: cam[k] if hasattr(cam, "__getitem__") else getattr(cam, k)
+    qx, qy, qz, qw = f("qx"), f("qy"), f("qz"), f("qw")
+    tx, tz = f("tx"), f("tz")
     # Yaw about the up (Y) axis. Approximate; verify against your mounting convention.
     yaw = math.atan2(2.0 * (qw * qy + qz * qx), 1.0 - 2.0 * (qy * qy + qx * qx))
-    return Pose(x=float(cam.tz), y=float(cam.tx), theta=float(yaw), timestamp=timestamp)
+    return Pose(x=float(tz), y=float(tx), theta=float(yaw), timestamp=timestamp)
 
 
 class PhoneLink:
@@ -101,12 +106,14 @@ class PhoneLink:
         if not self._new:
             return None
         self._new = False
-        # Pull the synchronized RGBD + pose for this frame.
-        depth = self._stream.get_depth_frame()  # HxW meters
+        # Pull the synchronized RGBD + pose for this frame. These getter names are verified
+        # against the Record3D demo (get_depth_frame / get_intrinsic_mat / get_camera_pose).
+        # ON DEVICE, still confirm: depth UNITS (expected meters) and SHAPE (HxW numpy), and
+        # the pose's world-frame convention (calibrated in _pose_from_camera).
+        depth = self._stream.get_depth_frame()  # HxW, meters (verify)
         intrinsics = self._stream.get_intrinsic_mat()  # 3x3
-        cam = self._stream.get_camera_pose()  # quaternion + translation
+        cam = self._stream.get_camera_pose()  # qx/qy/qz/qw + tx/ty/tz
         ts = time.monotonic()
-        # TODO: verify these getter names/shapes against your installed record3d version.
         return PhoneFrame(
             pose=_pose_from_camera(cam, ts),
             depth=np.asarray(depth, dtype=np.float32),
