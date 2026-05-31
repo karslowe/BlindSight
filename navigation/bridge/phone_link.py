@@ -47,6 +47,17 @@ class PhoneFrame:
     timestamp: float
 
 
+def _intrinsics_to_mat(coeffs) -> np.ndarray:
+    """Build the 3x3 camera matrix our back-projection expects from Record3D's intrinsics.
+
+    Record3D returns an IntrinsicMatrixCoeffs object (fx, fy, tx, ty), NOT a matrix - and its
+    (tx, ty) is the principal point (cx, cy). Assemble [[fx,0,cx],[0,fy,cy],[0,0,1]].
+    """
+    fx, fy = float(coeffs.fx), float(coeffs.fy)
+    cx, cy = float(coeffs.tx), float(coeffs.ty)
+    return np.array([[fx, 0.0, cx], [0.0, fy, cy], [0.0, 0.0, 1.0]], dtype=np.float32)
+
+
 def _pose_from_camera(cam, timestamp: float) -> Pose:
     """Convert a Record3D camera transform into our ground-plane 2D Pose.
 
@@ -58,9 +69,8 @@ def _pose_from_camera(cam, timestamp: float) -> Pose:
           x_map = tz (forward), y_map = tx (lateral), theta = yaw about the up (Y) axis.
           Calibrate this once on the bench by driving a known path and checking the Pose.
     """
-    # Record3D's pose fields are qx/qy/qz/qw/tx/ty/tz. Demos access them as keys
-    # (cam["qx"]); some builds expose them as attributes (cam.qx). Handle both so this works
-    # regardless of the binding version.
+    # Record3D's CameraPose exposes qx/qy/qz/qw/tx/ty/tz as attributes (verified on device,
+    # record3d 1.4.1). Accessor stays tolerant of a key-based binding just in case.
     f = lambda k: cam[k] if hasattr(cam, "__getitem__") else getattr(cam, k)
     qx, qy, qz, qw = f("qx"), f("qy"), f("qz"), f("qw")
     tx, tz = f("tx"), f("tz")
@@ -111,12 +121,12 @@ class PhoneLink:
         # ON DEVICE, still confirm: depth UNITS (expected meters) and SHAPE (HxW numpy), and
         # the pose's world-frame convention (calibrated in _pose_from_camera).
         depth = self._stream.get_depth_frame()  # HxW, meters (verify)
-        intrinsics = self._stream.get_intrinsic_mat()  # 3x3
-        cam = self._stream.get_camera_pose()  # qx/qy/qz/qw + tx/ty/tz
+        coeffs = self._stream.get_intrinsic_mat()  # IntrinsicMatrixCoeffs(fx, fy, tx, ty)
+        cam = self._stream.get_camera_pose()  # CameraPose(qx/qy/qz/qw, tx/ty/tz)
         ts = time.monotonic()
         return PhoneFrame(
             pose=_pose_from_camera(cam, ts),
             depth=np.asarray(depth, dtype=np.float32),
-            intrinsics=np.asarray(intrinsics, dtype=np.float32),
+            intrinsics=_intrinsics_to_mat(coeffs),
             timestamp=ts,
         )
