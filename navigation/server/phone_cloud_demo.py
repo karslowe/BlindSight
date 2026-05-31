@@ -45,6 +45,9 @@ from perception.pointcloud import depth_to_points_rgb_6dof  # noqa: E402
 STRIDE = 4
 MIN_RANGE_M = 0.2
 MAX_RANGE_M = 4.0
+# ARKit confidence floor (the phantom-dot fix). 2 = high-only (what navigation uses), 1 =
+# medium+, 0 = OFF (shows the old phantom fan). Flip between 2 and 0 to A/B-test the fix.
+MIN_CONFIDENCE = 2
 # Accumulation: dedup points onto a voxel grid so revisiting a spot does not pile up points.
 VOXEL_M = 0.03  # finer dedup -> denser surfaces (was 0.04)
 MAX_POINTS = 50000  # cap the accumulated cloud; matches the viewer's POINT_CAP
@@ -116,7 +119,7 @@ def main() -> None:
             pts, cols = depth_to_points_rgb_6dof(
                 frame.depth, frame.intrinsics, frame.extrinsic, frame.rgb,
                 stride=STRIDE, min_range_m=MIN_RANGE_M, max_range_m=MAX_RANGE_M,
-                confidence=frame.confidence,  # drop low-confidence phantom dots (dark/open space)
+                confidence=frame.confidence, min_confidence=MIN_CONFIDENCE,  # drop phantom dots
             )
             _accumulate(cloud, pts, cols)  # every frame, at the phone's full rate
             frames += 1
