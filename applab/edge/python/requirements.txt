@@ -1,0 +1,6 @@
+# App Lab brain endpoint deps. numpy ONLY (used by navigation/mapping/occupancy_grid.py).
+# UNPINNED on purpose: an unpinned numpy resolves to the prebuilt aarch64 wheel, while a
+# pinned old version (e.g. 1.26.4) tries to build from source and fails — the container has
+# no C toolchain. main.py also self-installs numpy as a fallback. record3d is NOT here: it
+# can't build in the container; iPhone capture runs natively on the host (~/lidar_feed.py).
+numpy

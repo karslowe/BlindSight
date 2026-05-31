@@ -1,0 +1,17 @@
+[Unit]
+Description=BlindSight iPhone LiDAR feed (record3d capture + HTTP on :8008)
+Documentation=file:///home/arduino/lidar_feed.py
+# usbmuxd is 'static'; pull it in when we start. Binding 0.0.0.0 doesn't need network-online.
+Wants=usbmuxd.service
+After=network.target usbmuxd.service
+
+[Service]
+Type=simple
+User=arduino
+Group=arduino
+ExecStart=/home/arduino/r3d-venv/bin/python /home/arduino/lidar_feed.py
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target
