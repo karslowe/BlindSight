@@ -116,6 +116,10 @@ class PhoneLink:
         self._lost = False  # currently in a dropped state (for one-shot logging)
         self._last_frame_t = 0.0
         self._last_reconnect_t = 0.0
+        # Bumped on every (re)connect. A RECONNECT means ARKit restarted with a NEW world
+        # origin, so anything accumulated in the old frame is stale - consumers compare this
+        # to detect that and reset their map/cloud instead of mixing two coordinate frames.
+        self.epoch = 0
 
     def _open_stream(self) -> bool:
         """(Re)create and connect the Record3D stream to the device. Returns True on success,
@@ -142,6 +146,7 @@ class PhoneLink:
         self._new = False
         self._stream.connect(devices[self.device_index])
         self._last_frame_t = time.monotonic()  # grace period before the watchdog can fire
+        self.epoch += 1  # new (or restarted) ARKit session -> a new world origin
         return True
 
     def connect(self) -> None:

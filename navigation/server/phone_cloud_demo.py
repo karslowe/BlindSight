@@ -104,12 +104,20 @@ def main() -> None:
     start = None
     frames = 0
     last_publish = 0.0
+    epoch = link.epoch
     try:
         while True:
             frame = link.read()
             if frame is None:
                 time.sleep(0.005)  # no new phone frame yet; do not busy-spin
                 continue
+            # A reconnect = a new ARKit world origin. Drop the old cloud so we don't overlay
+            # two misaligned coordinate frames (the "two wings" smear).
+            if link.epoch != epoch:
+                epoch = link.epoch
+                cloud.clear()
+                start = None
+                print("[demo] phone reconnected -> new tracking origin; cloud reset")
             if start is None:
                 start = frame.pose
                 grid._init_grid(start)  # seed floor bounds so the viewer has a ground plane
