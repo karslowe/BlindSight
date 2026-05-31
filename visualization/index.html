@@ -3,77 +3,109 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
-  <title>Recon Rover - Live Map</title>
+  <title>BLINDSIGHT - Live Map</title>
   <style>
     :root {
-      --panel: rgba(20, 24, 31, 0.82);
-      --border: rgba(255, 255, 255, 0.12);
+      --bg: #0c0b10;
+      --violet: #8b5cf6;
+      --violet-bright: #b388ff;
+      --mint: #2dd4bf;
+      --text: #ecebf3;
+      --muted: #9b96ad;
+      --panel: rgba(22, 18, 32, 0.78);
+      --border: rgba(139, 92, 246, 0.32);
     }
     * { box-sizing: border-box; }
     html, body {
-      margin: 0; height: 100%; background: #11151c; color: #ecf0f1;
-      font-family: system-ui, -apple-system, sans-serif; overflow: hidden;
+      margin: 0; height: 100%; color: var(--text);
+      font-family: system-ui, -apple-system, "Segoe UI", sans-serif; overflow: hidden;
       -webkit-user-select: none; user-select: none;
+      background:
+        radial-gradient(circle at 28% 18%, #1a1426 0%, rgba(26, 20, 38, 0) 55%),
+        radial-gradient(circle at 82% 88%, #181228 0%, rgba(24, 18, 40, 0) 50%),
+        var(--bg);
     }
     /* The canvas owns all pointer gestures (pan/zoom); stop the browser hijacking them. */
     #map { display: block; width: 100vw; height: 100vh; touch-action: none; }
 
     .panel {
       position: fixed; background: var(--panel); border: 1px solid var(--border);
-      border-radius: 10px; backdrop-filter: blur(6px); -webkit-backdrop-filter: blur(6px);
+      border-radius: 12px; backdrop-filter: blur(8px); -webkit-backdrop-filter: blur(8px);
+      box-shadow: 0 8px 28px rgba(0, 0, 0, 0.45);
     }
 
-    /* Map stats, top-left. */
-    #hud { top: 12px; left: 12px; padding: 8px 12px; font-size: 13px; font-variant-numeric: tabular-nums; }
+    /* Brand wordmark, top-left. */
+    #brand {
+      position: fixed; top: 14px; left: 14px; display: flex; align-items: center; gap: 10px;
+      pointer-events: none;
+    }
+    #brand svg { width: 30px; height: 30px; filter: drop-shadow(0 0 8px rgba(139, 92, 246, 0.6)); }
+    #brand .name {
+      font-size: 18px; font-weight: 800; letter-spacing: 3px; color: var(--text);
+      text-shadow: 0 0 14px rgba(139, 92, 246, 0.45);
+    }
+
+    /* Map stats, under the brand. */
+    #hud {
+      top: 58px; left: 14px; padding: 7px 12px; font-size: 13px; color: var(--muted);
+      font-variant-numeric: tabular-nums; letter-spacing: 0.3px;
+    }
+    #hud b { color: var(--violet-bright); font-weight: 700; }
 
     /* Connection badge, top-right. */
     #status {
-      top: 12px; right: 12px; padding: 8px 12px; font-size: 13px; font-weight: 600;
-      display: flex; align-items: center; gap: 8px;
+      top: 14px; right: 14px; padding: 8px 13px; font-size: 12px; font-weight: 700;
+      letter-spacing: 0.6px; text-transform: uppercase; display: flex; align-items: center; gap: 8px;
     }
-    #status .dot { width: 10px; height: 10px; border-radius: 50%; background: #95a5a6; }
-    #status.live .dot { background: #2ecc71; box-shadow: 0 0 8px #2ecc71; }
-    #status.sim  .dot { background: #f39c12; box-shadow: 0 0 8px #f39c12; }
-    #status.down .dot { background: #e74c3c; box-shadow: 0 0 8px #e74c3c; }
+    #status .dot { width: 9px; height: 9px; border-radius: 50%; background: #6b7280; }
+    #status.live .dot { background: var(--mint); box-shadow: 0 0 10px var(--mint); }
+    #status.sim  .dot { background: var(--violet); box-shadow: 0 0 10px var(--violet); }
+    #status.down .dot { background: #ef4444; box-shadow: 0 0 10px #ef4444; }
 
     /* Legend, bottom-left. */
-    #legend { bottom: 12px; left: 12px; padding: 10px 12px; font-size: 12px; line-height: 1.7; }
-    #legend .row { display: flex; align-items: center; gap: 8px; }
-    #legend .sw { width: 14px; height: 14px; border-radius: 3px; flex: 0 0 auto; }
+    #legend { bottom: 14px; left: 14px; padding: 11px 13px; font-size: 12px; line-height: 1.8; color: var(--muted); }
+    #legend .row { display: flex; align-items: center; gap: 9px; }
+    #legend .sw { width: 13px; height: 13px; border-radius: 3px; flex: 0 0 auto; }
     #legend .line { width: 16px; height: 0; flex: 0 0 auto; }
 
     /* Controls, bottom-right. */
-    #controls { bottom: 12px; right: 12px; padding: 8px; display: flex; gap: 8px; background: none; border: none; }
+    #controls { bottom: 14px; right: 14px; padding: 0; display: flex; gap: 9px; background: none; border: none; box-shadow: none; }
     .btn {
-      min-height: 44px; min-width: 44px; padding: 0 16px; font-size: 14px; font-weight: 600;
-      color: #ecf0f1; background: var(--panel); border: 1px solid var(--border);
-      border-radius: 10px; cursor: pointer;
+      min-height: 44px; min-width: 44px; padding: 0 18px; font-size: 13px; font-weight: 700;
+      letter-spacing: 0.5px; color: var(--violet-bright); background: var(--panel);
+      border: 1px solid var(--border); border-radius: 999px; cursor: pointer;
+      backdrop-filter: blur(8px); -webkit-backdrop-filter: blur(8px);
+      transition: background 0.15s, box-shadow 0.15s, transform 0.05s;
     }
-    .btn:active { background: rgba(255, 255, 255, 0.12); }
+    .btn:hover { box-shadow: 0 0 16px rgba(139, 92, 246, 0.35); }
+    .btn:active { background: rgba(139, 92, 246, 0.18); transform: translateY(1px); }
 
     /* Primary action, bottom-center. */
     #return {
-      position: fixed; bottom: 16px; left: 50%; transform: translateX(-50%);
-      min-height: 52px; padding: 0 30px; font-size: 16px; font-weight: 700;
-      border: 0; border-radius: 12px; background: #2d6cdf; color: white; cursor: pointer;
-      box-shadow: 0 4px 16px rgba(45, 108, 223, 0.4);
+      position: fixed; bottom: 18px; left: 50%; transform: translateX(-50%);
+      min-height: 52px; padding: 0 34px; font-size: 15px; font-weight: 800; letter-spacing: 0.5px;
+      border: 0; border-radius: 999px; color: white; cursor: pointer;
+      background: linear-gradient(135deg, #8b5cf6, #6d3df0);
+      box-shadow: 0 6px 22px rgba(124, 61, 240, 0.5), 0 0 0 1px rgba(179, 136, 255, 0.4) inset;
     }
-    #return:active { background: #245ab8; }
+    #return:hover { box-shadow: 0 6px 28px rgba(124, 61, 240, 0.7), 0 0 0 1px rgba(179, 136, 255, 0.6) inset; }
+    #return:active { transform: translateX(-50%) translateY(1px); }
   </style>
-
-  <!--
-    Plain static path (recommended): load Three.js from a CDN, no build step. Only needed
-    for the later 3D point-cloud upgrade; the 2D canvas viewer works without it.
-  -->
-  <!--
-  <script type="importmap">
-    { "imports": { "three": "https://unpkg.com/three@0.169.0/build/three.module.js" } }
-  </script>
-  -->
 </head>
 <body>
   <!-- viewer.js renders the map and owns pan/zoom on this canvas. -->
   <canvas id="map"></canvas>
+
+  <!-- Brand wordmark. -->
+  <div id="brand">
+    <svg viewBox="0 0 48 48" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+      <path d="M4 24c5-9 15-13 20-13s15 4 20 13c-5 9-15 13-20 13S9 33 4 24Z"
+            stroke="#8b5cf6" stroke-width="3.2" stroke-linejoin="round"/>
+      <circle cx="24" cy="24" r="6.5" fill="#8b5cf6"/>
+      <line x1="9" y1="40" x2="39" y2="8" stroke="#8b5cf6" stroke-width="3.6" stroke-linecap="round"/>
+    </svg>
+    <span class="name">BLINDSIGHT</span>
+  </div>
 
   <!-- Map stats (owned by viewer.js). -->
   <div id="hud" class="panel">waiting for map...</div>
@@ -83,19 +115,20 @@
 
   <!-- Color legend so judges can read the map at a glance. -->
   <div id="legend" class="panel">
-    <div class="row"><span class="sw" style="background:#e74c3c"></span> Obstacle</div>
-    <div class="row"><span class="sw" style="background:#cfd8dc"></span> Free space</div>
-    <div class="row"><span class="sw" style="background:#222831"></span> Unknown</div>
-    <div class="row"><span class="sw" style="background:#f1c40f"></span> Rover</div>
-    <div class="row"><span class="sw" style="background:#1abc9c"></span> Start</div>
-    <div class="row"><span class="sw" style="background:#e84393"></span> Target (YOLO)</div>
-    <div class="row"><span class="line" style="border-top:3px solid #2ecc71"></span> Route home</div>
-    <div class="row"><span class="line" style="border-top:3px dotted #141821"></span> Trail (where it drove)</div>
+    <div class="row"><span class="sw" style="background:#7c5cf0"></span> Obstacle</div>
+    <div class="row"><span class="sw" style="background:#2f2b45"></span> Free space</div>
+    <div class="row"><span class="sw" style="background:#14121c;border:1px solid #2a2640"></span> Unknown</div>
+    <div class="row"><span class="sw" style="background:#d6c8ff"></span> Rover</div>
+    <div class="row"><span class="sw" style="background:#2dd4bf"></span> Start</div>
+    <div class="row"><span class="sw" style="background:#ec4899"></span> Target (YOLO)</div>
+    <div class="row"><span class="line" style="border-top:3px solid #b388ff"></span> Route home</div>
+    <div class="row"><span class="line" style="border-top:3px dotted #c7baec"></span> Trail (where it drove)</div>
   </div>
 
   <!-- View controls. -->
   <div id="controls">
-    <button id="btn-reset" class="btn" title="Reset view">Reset</button>
+    <button id="btn-view" class="btn" title="Toggle 2.5D / flat view">2D</button>
+    <button id="btn-reset" class="btn" title="Reset view">RESET</button>
     <button id="btn-fullscreen" class="btn" title="Fullscreen">&#x26F6;</button>
   </div>
 
@@ -104,7 +137,7 @@
 
   <!-- Order matters: viewer defines the render hook first, then ws_client feeds it.
        The ?v query busts the browser cache when these change - bump it after edits. -->
-  <script type="module" src="src/viewer.js?v=5"></script>
-  <script type="module" src="src/ws_client.js?v=5"></script>
+  <script type="module" src="src/viewer.js?v=8"></script>
+  <script type="module" src="src/ws_client.js?v=8"></script>
 </body>
 </html>
